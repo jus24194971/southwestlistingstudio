@@ -79,6 +79,60 @@ class Platform(str, enum.Enum):
 
 
 # ---------------------------------------------------------------------------
+# Categories - Dad's organizational buckets, with marketplace mappings
+# ---------------------------------------------------------------------------
+
+
+class Category(Base):
+    """A user-defined category like "Tuners", "Pickups", or "Acoustic Guitars".
+
+    Categories are the bridge between Dad's mental organization (he thinks
+    "tuners") and each marketplace's required taxonomy (Reverb wants a UUID
+    for "Parts > Tuners > Locking", eBay wants its own category_id, etc).
+
+    Define once per category, reuse across many templates. Defaults stored
+    here pre-fill the template form when creating a new template in this
+    category (e.g. all tuners weigh ~3oz and ship USPS First Class).
+
+    The ``platform_config`` JSON blob holds future per-platform mappings
+    (eBay category_id, Etsy taxonomy_id, Squarespace store_page) that we'll
+    add as we wire each platform. For now only Reverb fields are populated.
+    """
+
+    __tablename__ = "categories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # Dad's display name. Unique - we use it for the library sidebar grouping.
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True, index=True)
+
+    # Reverb-specific taxonomy mapping
+    reverb_category_uuid: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    reverb_category_full_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Up to 2 subcategory UUIDs (Reverb allows max 3 categories total)
+    reverb_subcategory_uuids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    reverb_subcategory_names: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+
+    # Future-proofing: per-platform extra config (eBay category_id, etc).
+    # Keyed by platform.value: {"ebay": {...}, "etsy": {...}}
+    platform_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+
+    # Optional defaults that pre-fill template fields when creating a template
+    # in this category. All nullable - if unset, no pre-fill.
+    default_condition: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    default_weight_oz: Mapped[float | None] = mapped_column(nullable=True)
+    default_shipping_method: Mapped[str | None] = mapped_column(String(60), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+    # Relationships
+    templates: Mapped[list["Template"]] = relationship(back_populates="category")
+
+
+# ---------------------------------------------------------------------------
 # Templates - reusable listing definitions
 # ---------------------------------------------------------------------------
 
@@ -100,12 +154,33 @@ class Template(Base):
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
     brand: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+    # Reverb-aligned product fields. Optional because we may not always have them
+    # (e.g. accessories like picks don't have a year). When creating a Reverb
+    # listing we fall back to defaults if these are unset.
+    model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    year: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    finish: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+    # Reverb's category taxonomy uses UUIDs that we resolve via their API.
+    # We store the human-readable name (e.g. "Acoustic Guitars") and an
+    # optional subcategory string (comma-separated like "Built-in Electronics, Concert").
+    # The connector turns these into the actual UUIDs at post time.
+    reverb_category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    reverb_subcategories: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
     condition: Mapped[str] = mapped_column(String(40), nullable=False, default="new_old_stock")
     base_price_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     weight_oz: Mapped[float] = mapped_column(nullable=False, default=0.0)
 
     # Categorization
+    # category_id is the new model - links to a Category row that holds Reverb
+    # taxonomy UUIDs, defaults, etc. ``folder`` is kept for backward compatibility
+    # with existing data; over time it'll be phased out in favor of category.
+    category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("categories.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
     folder: Mapped[str] = mapped_column(String(120), nullable=False, default="Uncategorized", index=True)
     is_starred: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
@@ -138,6 +213,7 @@ class Template(Base):
     post_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     # Relationships
+    category: Mapped["Category | None"] = relationship(back_populates="templates")
     photos: Mapped[list["TemplatePhoto"]] = relationship(
         back_populates="template",
         cascade="all, delete-orphan",

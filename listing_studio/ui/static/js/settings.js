@@ -118,8 +118,76 @@
         ));
         container.appendChild(prefsBlock);
 
+        // Listing tail boilerplate (appended to every Reverb description)
+        container.appendChild(buildListingTailBlock());
+
         // Updates section
         container.appendChild(buildUpdatesBlock());
+    }
+
+    /**
+     * Block where Dad can paste his "About us / Owner's Notes" boilerplate that
+     * gets appended to every Reverb listing description automatically. Saved as
+     * the `reverb_listing_tail` preference.
+     */
+    function buildListingTailBlock() {
+        const block = LS.el("div", "section-block");
+        block.appendChild(buildSectionTitle("Reverb listing boilerplate"));
+
+        const intro = LS.el("div", "pref-help");
+        intro.style.padding = "0 0 8px 0";
+        intro.style.fontSize = "12px";
+        intro.style.lineHeight = "1.5";
+        intro.innerHTML = `This text gets appended to the bottom of every Reverb listing description automatically. Use it for shop policies, shipping info, the "About Southwest Acoustic Products" paragraph - anything you'd paste into every listing anyway.`;
+        block.appendChild(intro);
+
+        const textarea = LS.el("textarea");
+        textarea.id = "reverb-tail-textarea";
+        textarea.style.width = "100%";
+        textarea.style.minHeight = "180px";
+        textarea.style.background = "var(--bg-input)";
+        textarea.style.border = "1px solid var(--line)";
+        textarea.style.borderRadius = "4px";
+        textarea.style.padding = "10px 12px";
+        textarea.style.color = "var(--ink)";
+        textarea.style.fontFamily = "var(--font-body)";
+        textarea.style.fontSize = "13px";
+        textarea.style.lineHeight = "1.5";
+        textarea.style.resize = "vertical";
+        textarea.value = LS.state.preferences.reverb_listing_tail || "";
+        textarea.placeholder = "At Southwest Acoustic Products, all of our products are tested and brought back to new standards...";
+        block.appendChild(textarea);
+
+        const status = LS.el("div");
+        status.id = "reverb-tail-status";
+        status.style.marginTop = "6px";
+        status.style.fontSize = "11px";
+        status.style.color = "var(--ink-3)";
+        status.style.minHeight = "16px";
+        status.textContent = LS.state.preferences.reverb_listing_tail
+            ? `${LS.state.preferences.reverb_listing_tail.length} characters saved`
+            : "Empty - no boilerplate will be appended";
+        block.appendChild(status);
+
+        // Debounced auto-save 800ms after the user stops typing
+        let saveTimer = null;
+        textarea.addEventListener("input", () => {
+            clearTimeout(saveTimer);
+            status.textContent = "Saving…";
+            status.style.color = "var(--ink-3)";
+            saveTimer = setTimeout(async () => {
+                try {
+                    await updatePreference("reverb_listing_tail", textarea.value);
+                    status.style.color = "var(--moss-bright)";
+                    status.textContent = `✓ Saved (${textarea.value.length} characters)`;
+                } catch (err) {
+                    status.style.color = "var(--rust-bright)";
+                    status.textContent = `Save failed: ${err.message}`;
+                }
+            }, 800);
+        });
+
+        return block;
     }
 
     /**

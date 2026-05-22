@@ -74,6 +74,10 @@ _PREFERENCE_SPECS: dict[str, PreferenceSpec] = {
     "default_platforms": PreferenceSpec("default_platforms", "list[str]",
                                         lambda: [Platform.REVERB.value, Platform.EBAY.value,
                                                 Platform.SQUARESPACE.value]),
+    # Reverb listing tail: boilerplate text appended to every Reverb listing
+    # description ("About Southwest Acoustic Products" etc). Stored as plain
+    # text - the coerce method's default-string fallthrough handles it.
+    "reverb_listing_tail": PreferenceSpec("reverb_listing_tail", "str", ""),
 }
 
 

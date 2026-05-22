@@ -16,6 +16,66 @@ from listing_studio.core.models import Platform, PostStatus
 
 
 # ---------------------------------------------------------------------------
+# Categories
+# ---------------------------------------------------------------------------
+
+
+class CategoryOut(BaseModel):
+    """A category as exposed to the UI."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    reverb_category_uuid: str | None
+    reverb_category_full_name: str | None
+    reverb_subcategory_uuids: list[str] = Field(default_factory=list)
+    reverb_subcategory_names: list[str] = Field(default_factory=list)
+    platform_config: dict = Field(default_factory=dict)
+    default_condition: str | None
+    default_weight_oz: float | None
+    default_shipping_method: str | None
+    template_count: int = 0  # populated by the API layer
+    created_at: datetime
+    updated_at: datetime
+
+
+class CategoryCreate(BaseModel):
+    """Body for creating a new category."""
+
+    name: str
+    reverb_category_uuid: str | None = None
+    reverb_category_full_name: str | None = None
+    reverb_subcategory_uuids: list[str] = Field(default_factory=list)
+    reverb_subcategory_names: list[str] = Field(default_factory=list)
+    default_condition: str | None = None
+    default_weight_oz: float | None = None
+    default_shipping_method: str | None = None
+
+
+class CategoryUpdate(BaseModel):
+    """Body for updating an existing category. All fields optional."""
+
+    name: str | None = None
+    reverb_category_uuid: str | None = None
+    reverb_category_full_name: str | None = None
+    reverb_subcategory_uuids: list[str] | None = None
+    reverb_subcategory_names: list[str] | None = None
+    default_condition: str | None = None
+    default_weight_oz: float | None = None
+    default_shipping_method: str | None = None
+
+
+class ReverbTaxonomyMatch(BaseModel):
+    """One match from the Reverb taxonomy search."""
+
+    uuid: str
+    name: str
+    full_name: str
+    parent_uuid: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Templates
 # ---------------------------------------------------------------------------
 
@@ -56,11 +116,17 @@ class TemplateOut(BaseModel):
     title: str
     description: str
     brand: str | None
+    model: str | None = None
+    year: str | None = None
+    finish: str | None = None
+    reverb_category: str | None = None
+    reverb_subcategories: str | None = None
     condition: str
     base_price_cents: int
     quantity: int
     weight_oz: float
     folder: str
+    category_id: int | None = None
     is_starred: bool
     platform_overrides: dict[str, PlatformOverride]
     default_platforms: list[Platform]
@@ -96,11 +162,17 @@ class TemplateCreate(BaseModel):
     title: str
     description: str = ""
     brand: str | None = None
+    model: str | None = None
+    year: str | None = None
+    finish: str | None = None
+    reverb_category: str | None = None
+    reverb_subcategories: str | None = None
     condition: str = "new_old_stock"
     base_price_cents: int = 0
     quantity: int = 1
     weight_oz: float = 0.0
     folder: str = "Uncategorized"
+    category_id: int | None = None
     default_platforms: list[Platform] = Field(default_factory=list)
     shipping_method: str = "usps_first_class"
     shipping_cost_cents: int = 0
@@ -113,11 +185,17 @@ class TemplateUpdate(BaseModel):
     title: str | None = None
     description: str | None = None
     brand: str | None = None
+    model: str | None = None
+    year: str | None = None
+    finish: str | None = None
+    reverb_category: str | None = None
+    reverb_subcategories: str | None = None
     condition: str | None = None
     base_price_cents: int | None = None
     quantity: int | None = None
     weight_oz: float | None = None
     folder: str | None = None
+    category_id: int | None = None
     is_starred: bool | None = None
     platform_overrides: dict[str, PlatformOverride] | None = None
     default_platforms: list[Platform] | None = None
@@ -207,3 +285,4 @@ class AppPreferences(BaseModel):
     auto_copy_fb_description: bool = True
     photo_background_removal: bool = False
     default_platforms: list[Platform] = Field(default_factory=list)
+    reverb_listing_tail: str = ""

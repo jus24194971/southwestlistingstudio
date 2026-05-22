@@ -29,9 +29,13 @@ from listing_studio.core.db import session_scope
 from listing_studio.core.models import Platform
 from listing_studio.core.posting import post_to_platforms
 from listing_studio.core.schemas import (
+    CategoryCreate,
+    CategoryOut,
+    CategoryUpdate,
     PlatformConnectionStatus,
     PostRequest,
     PostResponse,
+    ReverbTaxonomyMatch,
     TemplateCreate,
     TemplateOut,
     TemplateSummary,
@@ -688,6 +692,172 @@ async def remove_photo_from_template(template_id: int, photo_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Categories - Dad's organizational groups with marketplace taxonomy mappings
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/categories")
+async def list_categories() -> list[CategoryOut]:
+    """Return all categories with template counts.
+
+    Sorted alphabetically by name. Each category includes ``template_count``
+    so the library sidebar can show "Tuners (12)" style labels.
+    """
+    from listing_studio.core.models import Category, Template
+    from sqlalchemy import func as sqlfunc
+
+    out: list[CategoryOut] = []
+    with session_scope() as session:
+        # Get template counts grouped by category
+        counts_query = session.execute(
+            select(Template.category_id, sqlfunc.count(Template.id))
+            .where(Template.category_id.isnot(None))
+            .group_by(Template.category_id)
+        ).all()
+        counts_by_id = {row[0]: row[1] for row in counts_query}
+
+        categories = session.execute(
+            select(Category).order_by(Category.name)
+        ).scalars().all()
+
+        for cat in categories:
+            data = CategoryOut.model_validate(cat)
+            data.template_count = counts_by_id.get(cat.id, 0)
+            out.append(data)
+
+    return out
+
+
+@app.post("/api/categories", status_code=201)
+async def create_category(payload: CategoryCreate) -> CategoryOut:
+    """Create a new category."""
+    from listing_studio.core.models import Category
+
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Category name is required")
+
+    with session_scope() as session:
+        # Check for name collision
+        existing = session.execute(
+            select(Category).where(Category.name == name)
+        ).scalar_one_or_none()
+        if existing is not None:
+            raise HTTPException(400, f"Category '{name}' already exists")
+
+        cat = Category(
+            name=name,
+            reverb_category_uuid=payload.reverb_category_uuid,
+            reverb_category_full_name=payload.reverb_category_full_name,
+            reverb_subcategory_uuids=payload.reverb_subcategory_uuids,
+            reverb_subcategory_names=payload.reverb_subcategory_names,
+            platform_config={},
+            default_condition=payload.default_condition,
+            default_weight_oz=payload.default_weight_oz,
+            default_shipping_method=payload.default_shipping_method,
+        )
+        session.add(cat)
+        session.flush()
+        result = CategoryOut.model_validate(cat)
+        result.template_count = 0
+        return result
+
+
+@app.patch("/api/categories/{category_id}")
+async def update_category(category_id: int, payload: CategoryUpdate) -> CategoryOut:
+    """Update an existing category."""
+    from listing_studio.core.models import Category, Template
+    from sqlalchemy import func as sqlfunc
+
+    with session_scope() as session:
+        cat = session.get(Category, category_id)
+        if cat is None:
+            raise HTTPException(404, f"Category {category_id} not found")
+
+        update_data = payload.model_dump(exclude_unset=True)
+
+        # Name collision check
+        if "name" in update_data and update_data["name"] != cat.name:
+            new_name = update_data["name"].strip()
+            if not new_name:
+                raise HTTPException(400, "Category name cannot be empty")
+            other = session.execute(
+                select(Category).where(Category.name == new_name)
+            ).scalar_one_or_none()
+            if other is not None and other.id != cat.id:
+                raise HTTPException(400, f"Category '{new_name}' already exists")
+            update_data["name"] = new_name
+
+        for key, value in update_data.items():
+            setattr(cat, key, value)
+
+        session.flush()
+
+        # Count templates
+        count = session.execute(
+            select(sqlfunc.count(Template.id))
+            .where(Template.category_id == cat.id)
+        ).scalar() or 0
+
+        result = CategoryOut.model_validate(cat)
+        result.template_count = count
+        return result
+
+
+@app.delete("/api/categories/{category_id}", status_code=204)
+async def delete_category(category_id: int) -> None:
+    """Delete a category. Fails if any templates still reference it."""
+    from listing_studio.core.models import Category, Template
+    from sqlalchemy import func as sqlfunc
+
+    with session_scope() as session:
+        cat = session.get(Category, category_id)
+        if cat is None:
+            raise HTTPException(404, f"Category {category_id} not found")
+
+        # Refuse delete if templates use it
+        count = session.execute(
+            select(sqlfunc.count(Template.id))
+            .where(Template.category_id == category_id)
+        ).scalar() or 0
+        if count > 0:
+            raise HTTPException(
+                400,
+                f"Can't delete '{cat.name}' - {count} template(s) still reference it. "
+                "Move them to another category or delete them first.",
+            )
+
+        session.delete(cat)
+
+
+# ---------------------------------------------------------------------------
+# Reverb taxonomy search (for the category picker UI)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/platforms/reverb/taxonomy/search")
+async def search_reverb_taxonomy(q: str = "", limit: int = 30) -> list[dict]:
+    """Search Reverb's category taxonomy.
+
+    Returns matches with uuid, name, and full_name (the breadcrumb path).
+    Used by the category creation modal to find the right Reverb category.
+
+    Empty query returns the first ``limit`` categories alphabetically.
+    """
+    from listing_studio.platforms.reverb import ReverbConnector
+
+    connector = ReverbConnector()
+    if not await connector.is_connected():
+        raise HTTPException(
+            400,
+            "Reverb not connected. Connect it in Settings before searching the taxonomy.",
+        )
+
+    matches = await connector.search_taxonomy(q, limit=limit)
+    return matches
+
+
+# ---------------------------------------------------------------------------
 # NAS photo browsing
 # ---------------------------------------------------------------------------
 
@@ -765,6 +935,150 @@ async def get_nas_image(path: str) -> FileResponse:
     # Let FastAPI guess the media type from the extension. JPEG, PNG, etc all
     # map sensibly.
     return FileResponse(image)
+
+
+# ---------------------------------------------------------------------------
+# Reverb listing creation (draft mode for testing)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/platforms/reverb/shipping-profiles")
+async def get_reverb_shipping_profiles() -> list[dict]:
+    """Return the user's Reverb shipping profiles for UI selection.
+
+    Empty list if not connected or no profiles exist.
+    """
+    from listing_studio.platforms.reverb import ReverbConnector
+    connector = ReverbConnector()
+    if not await connector.is_connected():
+        return []
+    return await connector.fetch_shipping_profiles()
+
+
+@app.post("/api/templates/{template_id}/post-to-reverb")
+async def post_template_to_reverb(template_id: int, payload: dict | None = None) -> dict:
+    """Create a draft Reverb listing from a template.
+
+    Body (all optional):
+        {
+            "shipping_profile_id": "1234",
+            "upload_photos": true     // default: true; set false to skip photos
+        }
+
+    Returns:
+        {
+            "listing_id": "...",
+            "state": "draft",
+            "url": "https://reverb.com/...",
+            "photo_results": {"uploaded": 3, "failed": 1, "errors": [...]}
+        }
+    """
+    from listing_studio.core.models import Template, Preference
+    from listing_studio.platforms.reverb import ReverbConnector
+    from listing_studio.platforms.base import PostingError
+    from pathlib import Path as PathLib
+
+    payload = payload or {}
+    shipping_profile_id = payload.get("shipping_profile_id")
+    upload_photos = payload.get("upload_photos", True)
+
+    with session_scope() as session:
+        template = session.get(Template, template_id)
+        if template is None:
+            raise HTTPException(404, f"Template {template_id} not found")
+
+        # Pull "listing tail" boilerplate from preferences
+        tail_pref = session.execute(
+            select(Preference).where(Preference.key == "reverb_listing_tail")
+        ).scalar_one_or_none()
+        listing_tail = (tail_pref.value if tail_pref else "") or ""
+
+        # Snapshot photo paths before we leave the session
+        photo_paths = sorted(
+            [(p.sort_order, p.source_path) for p in template.photos],
+            key=lambda x: x[0],
+        )
+        photo_paths = [path for (_order, path) in photo_paths]
+
+        # Pull category UUIDs if a category is assigned. These take precedence
+        # over the legacy reverb_category string field when posting.
+        category_reverb_uuid = None
+        category_subcategory_uuids: list[str] = []
+        if template.category_id and template.category:
+            category_reverb_uuid = template.category.reverb_category_uuid
+            category_subcategory_uuids = list(template.category.reverb_subcategory_uuids or [])
+
+        # Need to access template fields outside the session for the async
+        # connector call - detach by copying values we need
+        template_copy_data = {
+            "id": template.id,
+            "name": template.name,
+            "title": template.title,
+            "description": template.description,
+            "brand": template.brand,
+            "model": template.model,
+            "year": template.year,
+            "finish": template.finish,
+            "reverb_category": template.reverb_category,
+            "reverb_subcategories": template.reverb_subcategories,
+            "condition": template.condition,
+            "base_price_cents": template.base_price_cents,
+            "quantity": template.quantity,
+            # Category-resolved UUIDs - if set, the connector uses these
+            # directly instead of resolving from the string field
+            "_resolved_reverb_uuid": category_reverb_uuid,
+            "_resolved_reverb_subcategory_uuids": category_subcategory_uuids,
+        }
+
+    # Now make the API calls outside the session (httpx is async)
+    connector = ReverbConnector()
+    if not await connector.is_connected():
+        raise HTTPException(400, "Reverb not connected. Add token in Settings.")
+
+    # Build a lightweight stand-in object that quacks like a Template for create_draft.
+    # This avoids passing a detached SQLAlchemy instance across session boundaries.
+    class _T:
+        pass
+    t = _T()
+    for k, v in template_copy_data.items():
+        setattr(t, k, v)
+
+    try:
+        result = await connector.create_draft(
+            t, listing_tail=listing_tail, shipping_profile_id=shipping_profile_id,
+        )
+    except PostingError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    listing_id = result.get("id")
+    if not listing_id:
+        raise HTTPException(500, "Reverb didn't return a listing ID")
+
+    # Upload photos if requested
+    photo_results = {"uploaded": 0, "failed": 0, "errors": []}
+    if upload_photos and photo_paths:
+        for photo_path_str in photo_paths:
+            photo_path = PathLib(photo_path_str)
+            try:
+                await connector.upload_photo(str(listing_id), photo_path)
+                photo_results["uploaded"] += 1
+            except PostingError as exc:
+                photo_results["failed"] += 1
+                photo_results["errors"].append(
+                    f"{photo_path.name}: {exc}"
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                photo_results["failed"] += 1
+                photo_results["errors"].append(
+                    f"{photo_path.name}: {type(exc).__name__}: {exc}"
+                )
+
+    return {
+        "listing_id": str(listing_id),
+        "state": result.get("state"),
+        "url": result.get("url"),
+        "photo_results": photo_results,
+    }
 
 
 # ---------------------------------------------------------------------------

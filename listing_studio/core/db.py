@@ -68,9 +68,48 @@ def init_engine() -> Engine:
 
 
 def init_db() -> None:
-    """Create all tables. Idempotent. Called once at app startup."""
+    """Create all tables, then run lightweight migrations. Idempotent."""
     engine = init_engine()
     Base.metadata.create_all(engine)
+    _run_migrations(engine)
+
+
+def _run_migrations(engine: Engine) -> None:
+    """Apply additive schema changes for existing databases.
+
+    SQLAlchemy's create_all() doesn't add new columns to existing tables - it
+    only creates tables that don't exist yet. So when we add a column to a
+    model, we have to ALTER TABLE manually.
+
+    This is a deliberately simple approach. For each known column-addition,
+    we check if it already exists and ALTER if not. SQLite supports
+    ALTER TABLE ADD COLUMN since forever; it's fast and safe.
+
+    If we ever do anything more complex (renames, type changes), we'd switch
+    to Alembic. For now this is fine.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    existing_columns = {col["name"] for col in inspector.get_columns("templates")}
+
+    # Map of column name -> SQL fragment for the ALTER
+    needed_columns = {
+        "model": "TEXT",
+        "year": "TEXT",
+        "finish": "TEXT",
+        "reverb_category": "TEXT",
+        "reverb_subcategories": "TEXT",
+        "category_id": "INTEGER REFERENCES categories(id)",
+    }
+
+    with engine.begin() as conn:
+        for col_name, col_type in needed_columns.items():
+            if col_name not in existing_columns:
+                # SQLite ALTER TABLE syntax. Using parameterless string interpolation
+                # is safe here because col_name/col_type come from our hardcoded
+                # dict above, not user input.
+                conn.execute(text(f'ALTER TABLE templates ADD COLUMN "{col_name}" {col_type}'))
 
 
 @contextmanager

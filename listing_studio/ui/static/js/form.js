@@ -147,28 +147,71 @@
         group.appendChild(buildField("title", "Title", "text", tmpl.title));
         group.appendChild(buildField("description", "Description", "textarea", tmpl.description));
 
-        const row3 = LS.el("div", "field-row cols-3");
-        row3.appendChild(buildField("brand", "Brand", "text", tmpl.brand || ""));
-        row3.appendChild(buildField("year", "Year", "text", ""));
-        row3.appendChild(buildField("condition", "Condition", "select", tmpl.condition, [
-            { value: "new", label: "New" },
-            { value: "new_old_stock", label: "New (Old Stock)" },
-            { value: "used_excellent", label: "Used – Excellent" },
-            { value: "used_good", label: "Used – Good" },
-            { value: "used_fair", label: "Used – Fair" },
-            { value: "for_parts", label: "For Parts" },
-        ]));
+        // Brand / Model / Year / Finish row
+        const row3 = LS.el("div", "field-row cols-4");
+        row3.appendChild(buildField("brand", "Brand (Make)", "text", tmpl.brand || ""));
+        row3.appendChild(buildField("model", "Model", "text", tmpl.model || ""));
+        row3.appendChild(buildField("year", "Year", "text", tmpl.year || ""));
+        row3.appendChild(buildField("finish", "Finish/Color", "text", tmpl.finish || ""));
         group.appendChild(row3);
 
+        // Platform-source hint for the above row
+        const platformHint1 = LS.el("div");
+        platformHint1.style.fontSize = "11px";
+        platformHint1.style.color = "var(--ink-3)";
+        platformHint1.style.marginTop = "-8px";
+        platformHint1.style.marginBottom = "8px";
+        platformHint1.innerHTML = `<span style="color: var(--gold-bright);">●</span> Reverb fields · <span style="color: var(--gold-bright); opacity: 0.5;">●</span> eBay (once connected)`;
+        group.appendChild(platformHint1);
+
+        // Category dropdown (replaces the free-text reverb_category fields)
+        const categories = LS.state.categories || [];
+        const catRow = LS.el("div", "field-row cols-1");
+        const catFieldOptions = [{ value: "", label: "(no category)" }];
+        for (const cat of categories) {
+            catFieldOptions.push({ value: String(cat.id), label: cat.name });
+        }
+        catRow.appendChild(buildField(
+            "category_id", "Category", "select",
+            tmpl.category_id != null ? String(tmpl.category_id) : "",
+            catFieldOptions,
+        ));
+        group.appendChild(catRow);
+
+        // Help text showing what the category maps to
+        const catHelp = LS.el("div");
+        catHelp.style.fontSize = "11px";
+        catHelp.style.color = "var(--ink-3)";
+        catHelp.style.marginTop = "-8px";
+        catHelp.style.marginBottom = "8px";
+        catHelp.style.fontStyle = "italic";
+
+        const currentCat = LS.getCategoryById ? LS.getCategoryById(tmpl.category_id) : null;
+        if (currentCat && currentCat.reverb_category_full_name) {
+            catHelp.innerHTML = `Maps to Reverb: <span style="color: var(--gold-bright); font-family: var(--font-mono);">${LS.escapeHTML(currentCat.reverb_category_full_name)}</span>`;
+        } else if (categories.length === 0) {
+            catHelp.innerHTML = `No categories yet. Use "+ New Category" in the sidebar to create one with its Reverb taxonomy mapping.`;
+        } else {
+            catHelp.textContent = "Picking a category auto-applies the right Reverb taxonomy UUIDs at post time.";
+        }
+        group.appendChild(catHelp);
+
+        // Condition / Price / Quantity / Shipping row
         const row4 = LS.el("div", "field-row cols-4");
+        row4.appendChild(buildField("condition", "Condition", "select", tmpl.condition, [
+            { value: "brand_new", label: "Brand New" },
+            { value: "mint", label: "Mint" },
+            { value: "excellent", label: "Excellent" },
+            { value: "very_good", label: "Very Good" },
+            { value: "good", label: "Good" },
+            { value: "fair", label: "Fair" },
+            { value: "poor", label: "Poor" },
+            { value: "b_stock", label: "B-Stock" },
+            { value: "non_functioning", label: "Non Functioning" },
+        ]));
         row4.appendChild(buildField("base_price_cents", "Base Price", "money", tmpl.base_price_cents));
         row4.appendChild(buildField("quantity", "Quantity", "text", String(tmpl.quantity)));
         row4.appendChild(buildField("weight_oz", "Weight (oz)", "text", String(tmpl.weight_oz)));
-        row4.appendChild(buildField("shipping_method", "Shipping", "select", tmpl.shipping_method, [
-            { value: "usps_first_class", label: "USPS First Class" },
-            { value: "usps_priority", label: "USPS Priority" },
-            { value: "ups_ground", label: "UPS Ground" },
-        ]));
         group.appendChild(row4);
 
         section.appendChild(group);
@@ -349,6 +392,16 @@
         saveBtn.textContent = "Save changes to template";
         saveBtn.addEventListener("click", saveTemplate);
         left.appendChild(saveBtn);
+
+        // Test action: create a draft on Reverb (doesn't publish - safe to test)
+        const reverbDraftBtn = LS.el("button", "btn-ghost");
+        reverbDraftBtn.id = "btn-reverb-draft";
+        reverbDraftBtn.textContent = "Post Reverb Draft";
+        reverbDraftBtn.title = "Create a draft listing on Reverb (not published - you can review and publish or delete it on Reverb's site)";
+        reverbDraftBtn.style.marginLeft = "12px";
+        reverbDraftBtn.addEventListener("click", postReverbDraft);
+        left.appendChild(reverbDraftBtn);
+
         bar.appendChild(left);
 
         const right = LS.el("div", "right");
@@ -426,6 +479,9 @@
                 value = parseInt(value, 10) || 1;
             } else if (name === "weight_oz") {
                 value = parseFloat(value) || 0;
+            } else if (name === "category_id") {
+                // empty string in the select means "no category"
+                value = value === "" ? null : parseInt(value, 10);
             }
             form[name] = value;
         });
@@ -461,6 +517,98 @@
             btn.textContent = "Save changes *";
             btn.classList.remove("saving");
         }
+    }
+
+    async function postReverbDraft() {
+        if (!LS.state.currentTemplate) return;
+
+        // Save any unsaved edits first so what gets posted matches the form
+        if (LS.state.formDirty) {
+            await saveTemplate();
+        }
+
+        const btn = LS.$("btn-reverb-draft");
+        btn.disabled = true;
+        btn.textContent = "Creating draft…";
+
+        try {
+            const result = await LS.api(
+                "POST",
+                `/api/templates/${LS.state.currentTemplate.id}/post-to-reverb`,
+                { upload_photos: true },
+            );
+
+            // Show a results modal
+            showReverbDraftResult(result);
+        } catch (err) {
+            alert(`Reverb draft creation failed:\n\n${err.message}`);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "Post Reverb Draft";
+        }
+    }
+
+    function showReverbDraftResult(result) {
+        const backdrop = LS.el("div", "modal-backdrop");
+        const card = LS.el("div", "modal-card");
+        card.style.maxWidth = "560px";
+
+        const h2 = LS.el("h2");
+        h2.innerHTML = `Reverb draft created <em>successfully</em>`;
+        card.appendChild(h2);
+
+        const info = LS.el("div", "modal-sub");
+        info.innerHTML = `Listing ID: <span style="font-family: var(--font-mono); color: var(--gold-bright);">${result.listing_id}</span> · State: <strong>${result.state}</strong>`;
+        card.appendChild(info);
+
+        const photos = result.photo_results || {};
+        const photoSummary = LS.el("div");
+        photoSummary.style.fontSize = "13px";
+        photoSummary.style.marginTop = "12px";
+        photoSummary.style.padding = "10px 12px";
+        photoSummary.style.background = "var(--bg-input)";
+        photoSummary.style.borderRadius = "4px";
+        photoSummary.innerHTML = `<strong>Photos:</strong> ${photos.uploaded || 0} uploaded` +
+            (photos.failed > 0 ? `, <span style="color: var(--rust-bright);">${photos.failed} failed</span>` : "");
+
+        if (photos.errors && photos.errors.length > 0) {
+            const errList = LS.el("div");
+            errList.style.marginTop = "8px";
+            errList.style.fontSize = "11px";
+            errList.style.fontFamily = "var(--font-mono)";
+            errList.style.color = "var(--ink-3)";
+            errList.style.whiteSpace = "pre-wrap";
+            errList.textContent = photos.errors.join("\n");
+            photoSummary.appendChild(errList);
+        }
+        card.appendChild(photoSummary);
+
+        if (result.url) {
+            const linkRow = LS.el("div");
+            linkRow.style.marginTop = "16px";
+            linkRow.innerHTML = `<a href="${result.url}" target="_blank" style="color: var(--gold-bright); font-size: 13px;">→ View draft on Reverb</a>`;
+            card.appendChild(linkRow);
+        }
+
+        const note = LS.el("div");
+        note.style.marginTop = "16px";
+        note.style.fontSize = "12px";
+        note.style.color = "var(--ink-3)";
+        note.style.lineHeight = "1.5";
+        note.textContent = "Draft listings don't go live until you publish them on Reverb. To delete this test draft, log into Reverb's Seller Hub.";
+        card.appendChild(note);
+
+        const footer = LS.el("div", "modal-footer-bar");
+        const closeBtn = LS.el("button", "btn-update-now", "Done");
+        closeBtn.addEventListener("click", () => backdrop.remove());
+        footer.appendChild(closeBtn);
+        card.appendChild(footer);
+
+        backdrop.appendChild(card);
+        backdrop.addEventListener("click", e => {
+            if (e.target === backdrop) backdrop.remove();
+        });
+        document.body.appendChild(backdrop);
     }
 
     LS.postListing = async function () {
