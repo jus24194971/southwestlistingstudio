@@ -117,6 +117,75 @@
             "Use AI to automatically remove backgrounds from product photos before posting (slower; off by default)."
         ));
         container.appendChild(prefsBlock);
+
+        // Updates section
+        container.appendChild(buildUpdatesBlock());
+    }
+
+    /**
+     * Updates section: shows current version and a manual "Check for updates"
+     * button. Uses the existing update banner/install flow from updates.js
+     * if an update is found, so we don't duplicate the install logic.
+     */
+    function buildUpdatesBlock() {
+        const block = LS.el("div", "section-block");
+        block.appendChild(buildSectionTitle("Updates"));
+
+        const row = LS.el("div", "pref-row");
+
+        const info = LS.el("div", "pref-info");
+        info.appendChild(LS.el("div", "pref-label", "Check for updates"));
+
+        const helpText = LS.el("div", "pref-help");
+        helpText.id = "update-check-status";
+        helpText.textContent = "Click to see if a newer version is available on GitHub.";
+        info.appendChild(helpText);
+        row.appendChild(info);
+
+        const control = LS.el("div", "pref-control");
+        const btn = LS.el("button", "btn-secondary-sm", "Check Now");
+        btn.id = "btn-check-updates";
+        btn.addEventListener("click", () => handleCheckForUpdates(btn, helpText));
+        control.appendChild(btn);
+        row.appendChild(control);
+
+        block.appendChild(row);
+
+        return block;
+    }
+
+    async function handleCheckForUpdates(btn, statusEl) {
+        btn.disabled = true;
+        btn.textContent = "Checking…";
+        statusEl.style.color = "var(--ink-3)";
+        statusEl.textContent = "Talking to GitHub…";
+
+        try {
+            // force=true bypasses the 6-hour cache so the user gets a real check
+            const result = await LS.api("GET", "/api/updates/check?force=true");
+
+            if (!result.is_packaged) {
+                statusEl.style.color = "var(--ink-3)";
+                statusEl.textContent = "Updates only check in installed builds. You're running from source right now.";
+            } else if (result.update_available && result.release) {
+                statusEl.style.color = "var(--moss-bright)";
+                statusEl.innerHTML = `Update available: <strong>${LS.escapeHTML(result.release.tag_name)}</strong>. Look for the banner at the top of the window to install.`;
+                // Trigger the existing update banner flow
+                if (LS.checkForUpdates) {
+                    // Clear the cached check result so checkForUpdates re-renders the banner
+                    LS.checkForUpdates();
+                }
+            } else {
+                statusEl.style.color = "var(--moss-bright)";
+                statusEl.textContent = `✓ You're on the latest version (v${result.current_version}).`;
+            }
+        } catch (err) {
+            statusEl.style.color = "var(--rust-bright)";
+            statusEl.textContent = `Check failed: ${err.message}`;
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "Check Now";
+        }
     }
 
     function buildSectionTitle(text) {
