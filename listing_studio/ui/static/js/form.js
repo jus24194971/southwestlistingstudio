@@ -575,13 +575,16 @@
         btn.textContent = "Creating draft…";
 
         try {
+            // Skip photo upload until we have a working hosted-image path.
+            // Reverb's API needs publicly-accessible image URLs, not binary
+            // uploads. For now we create the draft without photos, and Dad
+            // adds them manually via the Reverb UI link in the result modal.
             const result = await LS.api(
                 "POST",
                 `/api/templates/${LS.state.currentTemplate.id}/post-to-reverb`,
-                { upload_photos: true },
+                { upload_photos: false },
             );
 
-            // Show a results modal
             showReverbDraftResult(result);
         } catch (err) {
             alert(`Reverb draft creation failed:\n\n${err.message}`);
@@ -597,41 +600,58 @@
         card.style.maxWidth = "560px";
 
         const h2 = LS.el("h2");
-        h2.innerHTML = `Reverb draft created <em>successfully</em>`;
+        h2.innerHTML = `Reverb draft <em>created</em>`;
         card.appendChild(h2);
 
+        // Reverb sometimes returns state as {"slug": "draft", "description": "Draft"}
+        // and sometimes as a plain string. Extract the readable form.
+        let stateLabel = "draft";
+        if (typeof result.state === "string") {
+            stateLabel = result.state;
+        } else if (result.state && typeof result.state === "object") {
+            stateLabel = result.state.slug || result.state.description || "draft";
+        }
+
         const info = LS.el("div", "modal-sub");
-        info.innerHTML = `Listing ID: <span style="font-family: var(--font-mono); color: var(--gold-bright);">${result.listing_id}</span> · State: <strong>${result.state}</strong>`;
+        info.innerHTML = `Listing ID: <span style="font-family: var(--font-mono); color: var(--gold-bright);">${result.listing_id}</span> · State: <strong>${stateLabel}</strong>`;
         card.appendChild(info);
 
-        const photos = result.photo_results || {};
-        const photoSummary = LS.el("div");
-        photoSummary.style.fontSize = "13px";
-        photoSummary.style.marginTop = "12px";
-        photoSummary.style.padding = "10px 12px";
-        photoSummary.style.background = "var(--bg-input)";
-        photoSummary.style.borderRadius = "4px";
-        photoSummary.innerHTML = `<strong>Photos:</strong> ${photos.uploaded || 0} uploaded` +
-            (photos.failed > 0 ? `, <span style="color: var(--rust-bright);">${photos.failed} failed</span>` : "");
-
-        if (photos.errors && photos.errors.length > 0) {
-            const errList = LS.el("div");
-            errList.style.marginTop = "8px";
-            errList.style.fontSize = "11px";
-            errList.style.fontFamily = "var(--font-mono)";
-            errList.style.color = "var(--ink-3)";
-            errList.style.whiteSpace = "pre-wrap";
-            errList.textContent = photos.errors.join("\n");
-            photoSummary.appendChild(errList);
-        }
-        card.appendChild(photoSummary);
-
+        // Next-step callout: photos must be added manually for now
+        const nextStep = LS.el("div");
+        Object.assign(nextStep.style, {
+            marginTop: "16px",
+            padding: "14px 16px",
+            background: "var(--bg-input)",
+            border: "1px solid var(--gold)",
+            borderRadius: "4px",
+            fontSize: "13px",
+            lineHeight: "1.5",
+        });
+        nextStep.innerHTML = `
+            <div style="font-weight: 600; color: var(--gold-bright); margin-bottom: 6px;">Next: add photos on Reverb</div>
+            <div style="color: var(--ink-2); margin-bottom: 10px;">
+                The draft is ready with all the listing details, but Reverb's API doesn't accept photo uploads directly.
+                Open the draft on Reverb to drag in photos, then publish.
+            </div>
+        `;
         if (result.url) {
-            const linkRow = LS.el("div");
-            linkRow.style.marginTop = "16px";
-            linkRow.innerHTML = `<a href="${result.url}" target="_blank" style="color: var(--gold-bright); font-size: 13px;">→ View draft on Reverb</a>`;
-            card.appendChild(linkRow);
+            const openBtn = LS.el("a");
+            openBtn.href = result.url;
+            openBtn.target = "_blank";
+            openBtn.textContent = "→ Open Draft on Reverb";
+            Object.assign(openBtn.style, {
+                display: "inline-block",
+                padding: "8px 14px",
+                background: "var(--gold-bright)",
+                color: "var(--bg-deep)",
+                textDecoration: "none",
+                borderRadius: "4px",
+                fontWeight: "600",
+                fontSize: "13px",
+            });
+            nextStep.appendChild(openBtn);
         }
+        card.appendChild(nextStep);
 
         const note = LS.el("div");
         note.style.marginTop = "16px";

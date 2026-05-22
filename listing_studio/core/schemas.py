@@ -152,6 +152,7 @@ class TemplateSummary(BaseModel):
     id: int
     name: str
     folder: str
+    category_id: int | None = None
     is_starred: bool
     last_posted_at: datetime | None
     post_count: int
