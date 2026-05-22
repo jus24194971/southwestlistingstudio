@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Listing Studio - Southwest Acoustics</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500;600&family=Inter+Tight:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Stylesheets, loaded in dependency order -->
+    <link rel="stylesheet" href="/static/css/tokens.css">
+    <link rel="stylesheet" href="/static/css/base.css">
+    <link rel="stylesheet" href="/static/css/library.css">
+    <link rel="stylesheet" href="/static/css/settings.css">
+    <link rel="stylesheet" href="/static/css/history.css">
+    <link rel="stylesheet" href="/static/css/picker.css">
+    <link rel="stylesheet" href="/static/css/results.css">
+    <link rel="stylesheet" href="/static/css/updates.css">
+</head>
+<body>
+
+<div class="chassis">
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+        <div class="brand">
+            <div class="brand-logo">
+                <img src="/static/southwest_logo.png" alt="Southwest Acoustics">
+            </div>
+            <div class="brand-divider"></div>
+            <div class="brand-product">
+                <div class="brand-product-name">Listing Studio</div>
+                <div class="brand-product-sub">Tucson · Multi-platform Workshop</div>
+            </div>
+        </div>
+
+        <div class="toolbar-actions">
+            <div id="connection-indicator" class="connection-indicator">
+                <div class="conn-dot"></div>
+                <div class="conn-text">Loading…</div>
+            </div>
+            <button class="tool-btn" id="btn-history">History</button>
+            <button class="tool-btn" id="btn-settings">Settings</button>
+        </div>
+    </div>
+
+    <!-- View container - holds library, settings, or history view -->
+    <div id="view-container">
+
+        <!-- LIBRARY VIEW (default) -->
+        <div id="library-view">
+
+            <aside class="library">
+                <div class="library-header">
+                    <div class="section-label">
+                        <span>Listing Library</span>
+                        <span class="count" id="template-count">—</span>
+                    </div>
+                    <input class="search" type="text" placeholder="Search templates…" id="template-search">
+                </div>
+
+                <div class="library-body" id="template-list">
+                    <div class="empty-loading">Loading templates…</div>
+                </div>
+
+                <div class="library-footer">
+                    <button class="btn-primary" id="btn-new-template">+ New Listing</button>
+                </div>
+            </aside>
+
+            <section class="form-panel" id="form-panel">
+                <div class="empty-state">
+                    <h2>Select a template from the library</h2>
+                    <p>Or click "New Listing" to start fresh.</p>
+                </div>
+            </section>
+
+        </div>
+
+        <!-- SETTINGS VIEW -->
+        <div id="settings-view" style="display: none;">
+            <div class="settings-container" id="settings-container">
+                <!-- Populated by settings.js -->
+            </div>
+        </div>
+
+        <!-- HISTORY VIEW -->
+        <div id="history-view" style="display: none;">
+            <!-- Populated by history.js -->
+        </div>
+
+    </div>
+
+    <!-- Status bar -->
+    <div class="statusbar">
+        <span id="status-message">Ready</span>
+        <div class="right">
+            <span class="statusbar-brand">Southwest Acoustics</span>
+            <span id="status-version">v—</span>
+        </div>
+    </div>
+
+</div>
+
+<!-- JavaScript, loaded in dependency order. state and api are foundational. -->
+<script src="/static/js/state.js"></script>
+<script src="/static/js/api.js"></script>
+<script src="/static/js/views.js"></script>
+<script src="/static/js/library.js"></script>
+<script src="/static/js/form.js"></script>
+<script src="/static/js/picker.js"></script>
+<script src="/static/js/results.js"></script>
+<script src="/static/js/settings.js"></script>
+<script src="/static/js/history.js"></script>
+<script src="/static/js/updates.js"></script>
+<script src="/static/js/main.js"></script>
+</body>
+</html>

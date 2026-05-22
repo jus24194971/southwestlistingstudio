@@ -1,0 +1,48 @@
+/* Design tokens for Listing Studio.
+ *
+ * Palette calibrated to Southwest Acoustics brand gold (#B2935B).
+ * All colors, fonts, and shadows used elsewhere should reference these tokens.
+ */
+
+:root {
+    /* Backgrounds (darkest to lightest) */
+    --bg-shell:        #1B1813;
+    --bg-panel:        #26211A;
+    --bg-panel-2:      #2E2820;
+    --bg-input:        #16130F;
+    --bg-hover:        #362E25;
+    --bg-selected:     #463A2B;
+
+    /* Borders and lines (dim to bright) */
+    --line-dim:        #382F23;
+    --line:            #4F4230;
+    --line-bright:     #685636;
+
+    /* Text (brightest to dimmest) */
+    --ink:             #ECE0C8;
+    --ink-2:           #CDB98F;
+    --ink-3:           #8A7B5E;
+    --ink-4:           #5D5239;
+
+    /* Brand gold sampled from Southwest Acoustics logo */
+    --gold:            #B2935B;
+    --gold-bright:     #D6B074;
+    --gold-dim:        #7A6238;
+    --gold-deep:       #5A4624;
+
+    /* Sonoran accents */
+    --terra:           #A8612E;
+    --moss:            #6E8C3E;
+    --moss-bright:     #95B557;
+    --rust:            #A24228;
+    --rust-bright:     #C95535;
+
+    /* Shadows */
+    --shadow-inset:    inset 0 1px 0 rgba(255,230,180,0.04), inset 0 -1px 0 rgba(0,0,0,0.45);
+    --shadow-drop:     0 1px 0 rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.35);
+
+    /* Fonts */
+    --font-display:    "Fraunces", Georgia, serif;
+    --font-body:       "Inter Tight", system-ui, sans-serif;
+    --font-mono:       "JetBrains Mono", ui-monospace, monospace;
+}

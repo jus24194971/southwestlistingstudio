@@ -1,0 +1,248 @@
+/* History view CSS - the posting history list.
+ *
+ * Lives alongside settings - same view-switching pattern. Shows a list of
+ * recent post attempts grouped by date, with per-platform status and links
+ * to the live listings where available.
+ */
+
+#history-view {
+    overflow-y: auto;
+    padding: 32px 40px 40px;
+    background: linear-gradient(180deg, #26211A 0%, #211D17 100%);
+}
+
+#history-view::-webkit-scrollbar { width: 10px; }
+#history-view::-webkit-scrollbar-thumb {
+    background: var(--line);
+    border-radius: 5px;
+    border: 2px solid #211D17;
+}
+
+.history-container { max-width: 920px; }
+
+/* History group (one per day) */
+.history-group { margin-bottom: 28px; }
+
+.history-group-header {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-weight: 500;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.history-group-header strong {
+    color: var(--gold-bright);
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 18px;
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 500;
+}
+
+.history-group-header::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, var(--line) 0%, transparent 100%);
+}
+
+/* History item card (one post attempt batch) */
+.history-item {
+    background: var(--bg-panel-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    overflow: hidden;
+    transition: all 0.15s;
+}
+
+.history-item:hover { border-color: var(--gold-dim); }
+
+.history-item-header {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    padding: 14px 18px;
+    gap: 16px;
+    border-bottom: 1px solid var(--line-dim);
+    cursor: pointer;
+}
+
+.history-template {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+}
+
+.history-template-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-template-meta {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.history-platform-strip { display: flex; gap: 4px; }
+
+.history-platform-dot {
+    width: 24px;
+    height: 24px;
+    border-radius: 5px;
+    display: grid;
+    place-items: center;
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 11px;
+    color: white;
+    position: relative;
+}
+
+.history-platform-dot.reverb { background: #F5621D; }
+.history-platform-dot.ebay { background: white; color: #E53238; }
+.history-platform-dot.etsy { background: #F1641E; }
+.history-platform-dot.squarespace { background: #000; color: white; font-size: 9px; }
+.history-platform-dot.facebook { background: #1877F2; }
+
+.history-platform-dot::after {
+    content: "";
+    position: absolute;
+    bottom: -3px;
+    right: -3px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid var(--bg-panel-2);
+}
+
+.history-platform-dot.status-success::after { background: var(--moss); }
+.history-platform-dot.status-failed::after { background: var(--rust); }
+.history-platform-dot.status-manual::after { background: var(--terra); }
+
+.history-time {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--ink-4);
+    letter-spacing: 0.04em;
+}
+
+.history-item-detail {
+    background: rgba(0,0,0,0.18);
+    padding: 0 18px;
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.25s ease-out;
+}
+
+.history-item.expanded .history-item-detail {
+    max-height: 600px;
+    padding: 12px 18px 16px;
+}
+
+.history-result-row {
+    display: grid;
+    grid-template-columns: 28px 1fr auto;
+    align-items: center;
+    padding: 8px 0;
+    gap: 12px;
+    border-bottom: 1px solid var(--line-dim);
+}
+
+.history-result-row:last-child { border-bottom: none; }
+
+.history-result-logo {
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    display: grid;
+    place-items: center;
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 11px;
+    color: white;
+}
+
+.history-result-logo.reverb { background: #F5621D; }
+.history-result-logo.ebay { background: white; color: #E53238; }
+.history-result-logo.etsy { background: #F1641E; }
+.history-result-logo.squarespace { background: #000; color: white; font-size: 9px; }
+.history-result-logo.facebook { background: #1877F2; }
+
+.history-result-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.history-result-platform {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--ink);
+}
+
+.history-result-meta {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--ink-3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-result-meta a { color: var(--gold-bright); text-decoration: none; }
+.history-result-meta a:hover { text-decoration: underline; }
+
+.history-result-meta.error { color: var(--rust-bright); }
+
+.history-result-price {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--gold-bright);
+    font-weight: 600;
+}
+
+/* Empty state for history */
+.history-empty {
+    padding: 60px 32px;
+    text-align: center;
+    color: var(--ink-3);
+}
+
+.history-empty .icon {
+    font-size: 48px;
+    color: var(--ink-4);
+    margin-bottom: 16px;
+}
+
+.history-empty h3 {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 20px;
+    color: var(--ink-2);
+    margin-bottom: 8px;
+}
+
+.history-empty p {
+    font-size: 13px;
+    line-height: 1.5;
+    max-width: 380px;
+    margin: 0 auto;
+}

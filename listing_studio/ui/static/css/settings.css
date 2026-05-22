@@ -1,0 +1,354 @@
+/* Settings view CSS - platform connection cards, preference toggles, default-platform pills. */
+
+#settings-view {
+    overflow-y: auto;
+    padding: 32px 40px 40px;
+    background: linear-gradient(180deg, #26211A 0%, #211D17 100%);
+}
+
+#settings-view::-webkit-scrollbar { width: 10px; }
+#settings-view::-webkit-scrollbar-track { background: transparent; }
+#settings-view::-webkit-scrollbar-thumb {
+    background: var(--line);
+    border-radius: 5px;
+    border: 2px solid #211D17;
+}
+
+.settings-container { max-width: 860px; }
+
+.page-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding-bottom: 22px;
+    margin-bottom: 28px;
+    border-bottom: 1px solid var(--line-dim);
+    gap: 24px;
+}
+
+.page-header h1 {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 26px;
+    color: var(--ink);
+    line-height: 1.15;
+    letter-spacing: -0.005em;
+}
+
+.page-header h1 em { font-style: italic; color: var(--gold-bright); }
+
+.page-header p {
+    margin-top: 6px;
+    font-size: 13.5px;
+    color: var(--ink-2);
+    line-height: 1.5;
+    max-width: 580px;
+}
+
+.section-block { margin-bottom: 32px; }
+
+.section-title-line {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-weight: 500;
+    margin-bottom: 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.section-title-line::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, var(--line) 0%, transparent 100%);
+}
+
+.section-help {
+    font-size: 12.5px;
+    color: var(--ink-3);
+    line-height: 1.5;
+    margin-bottom: 16px;
+}
+
+/* Platform connection cards */
+.platform-card {
+    background: var(--bg-panel-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 12px;
+    transition: all 0.15s;
+}
+
+.platform-card.connected {
+    border-color: rgba(110, 140, 62, 0.35);
+    background: linear-gradient(180deg, rgba(110, 140, 62, 0.03), var(--bg-panel-2) 30%);
+}
+
+.platform-card-body {
+    display: grid;
+    grid-template-columns: 44px 1fr auto;
+    align-items: center;
+    padding: 16px 18px;
+    gap: 16px;
+}
+
+.pc-logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 7px;
+    display: grid;
+    place-items: center;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 17px;
+    color: white;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.pc-logo.reverb { background: #F5621D; }
+.pc-logo.ebay { background: white; color: #E53238; }
+.pc-logo.etsy { background: #F1641E; }
+.pc-logo.squarespace { background: #000; color: white; font-weight: 700; font-size: 14px; }
+.pc-logo.facebook { background: #1877F2; }
+
+.pc-info { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+
+.pc-name {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ink);
+}
+
+.pc-status-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    padding: 3px 8px;
+    border-radius: 999px;
+}
+
+.pc-status-pill.connected {
+    background: rgba(110, 140, 62, 0.15);
+    border: 1px solid rgba(110, 140, 62, 0.4);
+    color: var(--moss-bright);
+}
+
+.pc-status-pill.disconnected {
+    background: rgba(168, 97, 46, 0.12);
+    border: 1px solid rgba(168, 97, 46, 0.3);
+    color: var(--terra);
+}
+
+.pc-status-pill.manual {
+    background: rgba(120, 130, 230, 0.12);
+    border: 1px solid rgba(120, 130, 230, 0.3);
+    color: #9AA2E8;
+}
+
+.pc-detail {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-3);
+    letter-spacing: 0.02em;
+}
+
+.pc-detail strong { color: var(--ink-2); font-weight: 500; }
+
+.pc-actions { display: flex; align-items: center; gap: 8px; }
+
+.btn-connect {
+    background: linear-gradient(180deg, var(--gold-bright) 0%, var(--gold) 60%, var(--gold-dim) 100%);
+    border: 1px solid var(--gold-deep);
+    color: #251A0A;
+    font-family: var(--font-body);
+    font-weight: 600;
+    font-size: 12.5px;
+    padding: 8px 16px;
+    border-radius: 5px;
+    cursor: pointer;
+    letter-spacing: 0.01em;
+    box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.3),
+        inset 0 -1px 0 rgba(0,0,0,0.2),
+        0 1px 2px rgba(0,0,0,0.3);
+    transition: filter 0.1s;
+}
+
+.btn-connect:hover { filter: brightness(1.08); }
+
+.btn-secondary-sm {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--ink-2);
+    font-family: var(--font-body);
+    font-weight: 500;
+    font-size: 12px;
+    padding: 7px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s;
+}
+
+.btn-secondary-sm:hover {
+    background: var(--bg-hover);
+    border-color: var(--line-bright);
+    color: var(--ink);
+}
+
+.btn-danger-sm {
+    background: transparent;
+    border: 1px solid rgba(162, 66, 40, 0.4);
+    color: var(--rust);
+    font-family: var(--font-body);
+    font-weight: 500;
+    font-size: 12px;
+    padding: 7px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s;
+}
+
+.btn-danger-sm:hover {
+    background: rgba(162, 66, 40, 0.1);
+    border-color: var(--rust);
+}
+
+/* Default platforms pill row */
+.platform-defaults {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.platform-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-input);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 12px 6px 6px;
+    cursor: pointer;
+    transition: all 0.12s;
+}
+
+.platform-pill:hover { border-color: var(--gold-dim); }
+
+.platform-pill.active {
+    background: rgba(178, 147, 91, 0.1);
+    border-color: var(--gold);
+}
+
+.platform-pill-logo {
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    display: grid;
+    place-items: center;
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 11px;
+    color: white;
+}
+
+.platform-pill-logo.reverb { background: #F5621D; }
+.platform-pill-logo.ebay { background: white; color: #E53238; }
+.platform-pill-logo.etsy { background: #F1641E; }
+.platform-pill-logo.squarespace { background: #000; color: white; font-size: 9px; }
+.platform-pill-logo.facebook { background: #1877F2; }
+
+.platform-pill-name { font-size: 11.5px; font-weight: 500; color: var(--ink-2); }
+.platform-pill.active .platform-pill-name { color: var(--ink); }
+
+/* Preference rows */
+.pref-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    padding: 14px 0;
+    gap: 20px;
+    border-bottom: 1px solid var(--line-dim);
+}
+
+.pref-row:last-child { border-bottom: none; }
+
+.pref-info { display: flex; flex-direction: column; gap: 3px; }
+.pref-label { font-size: 13.5px; color: var(--ink); font-weight: 500; }
+
+.pref-help {
+    font-size: 12px;
+    color: var(--ink-3);
+    line-height: 1.4;
+    max-width: 540px;
+}
+
+.pref-control { flex-shrink: 0; }
+
+.toggle {
+    width: 42px;
+    height: 22px;
+    background: var(--bg-input);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    position: relative;
+    cursor: pointer;
+    transition: all 0.18s;
+}
+
+.toggle::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    background: var(--ink-3);
+    border-radius: 50%;
+    transition: all 0.18s;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+.toggle.on {
+    background: linear-gradient(180deg, var(--gold-bright), var(--gold));
+    border-color: var(--gold-deep);
+}
+
+.toggle.on::after { left: 22px; background: #251A0A; }
+
+.pref-number {
+    background: var(--bg-input);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 7px 10px;
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    width: 80px;
+    text-align: right;
+}
+
+.pref-number:focus {
+    outline: none;
+    border-color: var(--gold);
+    box-shadow: 0 0 0 3px rgba(178, 147, 91, 0.15);
+}
+
+.pref-suffix {
+    margin-left: 8px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-3);
+}
