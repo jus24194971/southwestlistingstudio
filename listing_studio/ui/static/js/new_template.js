@@ -225,6 +225,48 @@
         row2.appendChild(weightField);
         card.appendChild(row2);
 
+        // --- Reverb shipping (free or flat domestic only for now) ---
+        state.reverb_shipping_type = null;
+        state.reverb_shipping_flat_cents = 0;
+
+        const shipRow = buildFieldRow(2);
+        const shipTypeField = buildField("Reverb Shipping", "Reverb");
+        const shipTypeSelect = LS.el("select");
+        applyInputStyle(shipTypeSelect);
+        for (const opt of [
+            { value: "", label: "(set per-template later)" },
+            { value: "free", label: "Free domestic" },
+            { value: "flat", label: "Flat domestic rate" },
+        ]) {
+            const o = LS.el("option", null, opt.label);
+            o.value = opt.value;
+            shipTypeSelect.appendChild(o);
+        }
+        shipTypeField.appendChild(shipTypeSelect);
+        shipRow.appendChild(shipTypeField);
+
+        const shipAmountField = buildField("Flat Rate ($)", "Only when flat");
+        const shipAmountInput = buildInput();
+        shipAmountInput.placeholder = "25.00";
+        shipAmountInput.disabled = true;
+        shipAmountInput.style.opacity = "0.5";
+        shipAmountInput.addEventListener("input", () => {
+            state.reverb_shipping_flat_cents = LS.parseDollars(shipAmountInput.value);
+        });
+        shipAmountField.appendChild(shipAmountInput);
+        shipRow.appendChild(shipAmountField);
+        card.appendChild(shipRow);
+
+        shipTypeSelect.addEventListener("change", () => {
+            state.reverb_shipping_type = shipTypeSelect.value || null;
+            const isFlat = shipTypeSelect.value === "flat";
+            shipAmountInput.disabled = !isFlat;
+            shipAmountInput.style.opacity = isFlat ? "1" : "0.5";
+            if (!isFlat) {
+                state.reverb_shipping_flat_cents = 0;
+            }
+        });
+
         // --- Description (optional - they can fill in later too) ---
         card.appendChild(buildLabel("Description (optional)",
             "Product-specific description. Boilerplate ('About Southwest Acoustic Products') is auto-appended at post time from your Settings."));
@@ -276,6 +318,8 @@
                 weight_oz: state.weight_oz,
                 category_id: state.category_id,
                 folder: "Uncategorized",  // legacy folder field
+                reverb_shipping_type: state.reverb_shipping_type,
+                reverb_shipping_flat_cents: state.reverb_shipping_flat_cents,
             };
 
             try {

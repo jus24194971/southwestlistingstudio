@@ -422,7 +422,14 @@ class ReverbConnector(PlatformConnector):
                 payload["year"] = template.year
             if template.finish:
                 payload["finish"] = template.finish
-            if shipping_profile_id:
+
+            # Shipping: prefer the template's per-listing shipping fields over
+            # an explicit profile ID. If neither is set, Reverb falls back to
+            # the seller's default profile (if they have one).
+            shipping_payload = _build_shipping_payload(template)
+            if shipping_payload:
+                payload["shipping"] = shipping_payload
+            elif shipping_profile_id:
                 payload["shipping_profile_id"] = shipping_profile_id
 
             response = await client.post(
@@ -606,6 +613,48 @@ def _resolve_condition_uuid(template_condition: str) -> str | None:
 
 def _cents_to_decimal_str(cents: int) -> str:
     return f"{cents / 100:.2f}"
+
+
+def _build_shipping_payload(template: Any) -> dict | None:
+    """Build the ``shipping`` block of a Reverb create-listing payload.
+
+    Reverb format:
+        {"rates": [{"region_code": "US_CON", "rate": {"amount": "0.00", "currency": "USD"}}]}
+
+    Region codes:
+      US_CON  - US continental (lower 48)
+      XX      - Everywhere else (international)
+
+    Returns None if the template has no shipping config (caller should fall
+    back to a profile in that case).
+
+    Currently we only set US continental (free or flat). International is
+    deferred per Dad's "domestic only" preference; if he ever wants to ship
+    international, we add it here.
+    """
+    ship_type = getattr(template, "reverb_shipping_type", None)
+    if not ship_type:
+        return None
+
+    if ship_type == "free":
+        amount_cents = 0
+    elif ship_type == "flat":
+        amount_cents = getattr(template, "reverb_shipping_flat_cents", 0) or 0
+    else:
+        # Unknown type - safer to skip than guess
+        return None
+
+    return {
+        "rates": [
+            {
+                "region_code": "US_CON",
+                "rate": {
+                    "amount": _cents_to_decimal_str(amount_cents),
+                    "currency": "USD",
+                },
+            },
+        ],
+    }
 
 
 def _guess_mime(path: Path) -> str:

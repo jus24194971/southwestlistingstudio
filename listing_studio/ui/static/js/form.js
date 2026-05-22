@@ -196,7 +196,7 @@
         }
         group.appendChild(catHelp);
 
-        // Condition / Price / Quantity / Shipping row
+        // Condition / Price / Quantity / Weight row
         const row4 = LS.el("div", "field-row cols-4");
         row4.appendChild(buildField("condition", "Condition", "select", tmpl.condition, [
             { value: "brand_new", label: "Brand New" },
@@ -213,6 +213,46 @@
         row4.appendChild(buildField("quantity", "Quantity", "text", String(tmpl.quantity)));
         row4.appendChild(buildField("weight_oz", "Weight (oz)", "text", String(tmpl.weight_oz)));
         group.appendChild(row4);
+
+        // Reverb shipping row
+        const shipType = tmpl.reverb_shipping_type || "";
+        const shipRow = LS.el("div", "field-row cols-2");
+        shipRow.appendChild(buildField("reverb_shipping_type", "Reverb Shipping", "select", shipType, [
+            { value: "", label: "(not configured - falls back to profile)" },
+            { value: "free", label: "Free domestic shipping" },
+            { value: "flat", label: "Flat domestic rate" },
+        ]));
+        // The flat-rate amount input is always rendered, just hidden when not flat
+        const flatField = buildField(
+            "reverb_shipping_flat_cents", "Flat Rate Amount", "money",
+            tmpl.reverb_shipping_flat_cents || 0,
+        );
+        flatField.id = "shipping-flat-field";
+        flatField.style.visibility = shipType === "flat" ? "visible" : "hidden";
+        shipRow.appendChild(flatField);
+        group.appendChild(shipRow);
+
+        // Wire visibility toggle on the shipping type select
+        // We need to defer this until after the DOM is attached, so we do it
+        // via a small inline script approach using setTimeout(0)
+        setTimeout(() => {
+            const shipTypeSelect = document.querySelector('[name="reverb_shipping_type"]');
+            const flatFieldEl = document.getElementById("shipping-flat-field");
+            if (shipTypeSelect && flatFieldEl) {
+                shipTypeSelect.addEventListener("change", () => {
+                    flatFieldEl.style.visibility = shipTypeSelect.value === "flat" ? "visible" : "hidden";
+                });
+            }
+        }, 0);
+
+        const shipHelp = LS.el("div");
+        shipHelp.style.fontSize = "11px";
+        shipHelp.style.color = "var(--ink-3)";
+        shipHelp.style.marginTop = "-8px";
+        shipHelp.style.marginBottom = "8px";
+        shipHelp.style.fontStyle = "italic";
+        shipHelp.textContent = "US continental shipping only. International shipping uses your Reverb default profile.";
+        group.appendChild(shipHelp);
 
         section.appendChild(group);
         return section;
@@ -482,6 +522,9 @@
             } else if (name === "category_id") {
                 // empty string in the select means "no category"
                 value = value === "" ? null : parseInt(value, 10);
+            } else if (name === "reverb_shipping_type") {
+                // empty select value means "no shipping configured" - send null
+                value = value === "" ? null : value;
             }
             form[name] = value;
         });

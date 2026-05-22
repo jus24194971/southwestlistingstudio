@@ -101,6 +101,8 @@ def _run_migrations(engine: Engine) -> None:
         "reverb_category": "TEXT",
         "reverb_subcategories": "TEXT",
         "category_id": "INTEGER REFERENCES categories(id)",
+        "reverb_shipping_type": "TEXT",
+        "reverb_shipping_flat_cents": "INTEGER NOT NULL DEFAULT 0",
     }
 
     with engine.begin() as conn:

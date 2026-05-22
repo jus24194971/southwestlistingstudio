@@ -204,6 +204,16 @@ class Template(Base):
     shipping_method: Mapped[str] = mapped_column(String(60), nullable=False, default="usps_first_class")
     shipping_cost_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # Reverb-specific shipping. Dad's pattern is "domestic free" or "domestic
+    # flat $X" - simpler than Reverb's full profile model. We translate these
+    # into Reverb's per-listing shipping rates at post time.
+    # Valid values for reverb_shipping_type:
+    #   "free"   - free domestic shipping
+    #   "flat"   - flat domestic rate (amount in reverb_shipping_flat_cents)
+    #   None     - not configured (caller should fall back to a profile or fail loudly)
+    reverb_shipping_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    reverb_shipping_flat_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

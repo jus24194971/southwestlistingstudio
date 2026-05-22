@@ -132,6 +132,8 @@ class TemplateOut(BaseModel):
     default_platforms: list[Platform]
     shipping_method: str
     shipping_cost_cents: int
+    reverb_shipping_type: str | None = None
+    reverb_shipping_flat_cents: int = 0
     created_at: datetime
     updated_at: datetime
     last_posted_at: datetime | None
@@ -176,6 +178,8 @@ class TemplateCreate(BaseModel):
     default_platforms: list[Platform] = Field(default_factory=list)
     shipping_method: str = "usps_first_class"
     shipping_cost_cents: int = 0
+    reverb_shipping_type: str | None = None
+    reverb_shipping_flat_cents: int = 0
 
 
 class TemplateUpdate(BaseModel):
@@ -201,6 +205,8 @@ class TemplateUpdate(BaseModel):
     default_platforms: list[Platform] | None = None
     shipping_method: str | None = None
     shipping_cost_cents: int | None = None
+    reverb_shipping_type: str | None = None
+    reverb_shipping_flat_cents: int | None = None
 
 
 # ---------------------------------------------------------------------------

@@ -66,6 +66,8 @@ def create_template(session: Session, payload: TemplateCreate) -> Template:
         default_platforms=[p.value for p in payload.default_platforms],
         shipping_method=payload.shipping_method,
         shipping_cost_cents=payload.shipping_cost_cents,
+        reverb_shipping_type=payload.reverb_shipping_type,
+        reverb_shipping_flat_cents=payload.reverb_shipping_flat_cents,
         platform_overrides={},
     )
     session.add(tmpl)

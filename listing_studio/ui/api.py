@@ -1024,6 +1024,9 @@ async def post_template_to_reverb(template_id: int, payload: dict | None = None)
             "condition": template.condition,
             "base_price_cents": template.base_price_cents,
             "quantity": template.quantity,
+            # Shipping config - per-listing rates beat any default profile
+            "reverb_shipping_type": template.reverb_shipping_type,
+            "reverb_shipping_flat_cents": template.reverb_shipping_flat_cents,
             # Category-resolved UUIDs - if set, the connector uses these
             # directly instead of resolving from the string field
             "_resolved_reverb_uuid": category_reverb_uuid,
