@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 # GitHub repo where releases are published. Set to None to disable updates.
 # When you create the repo, update this to "yourname/listing-studio" or similar.
-GITHUB_REPO: str | None = "jus24194971/southwestlistingstudio"
+GITHUB_REPO: str | None = "southwestacoustics/listing-studio"
 
 # How long to cache "no update available" before re-checking (during a long session)
 RECHECK_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
@@ -354,14 +354,20 @@ def read_current_version() -> Path | None:
 
 
 def restart_into(install_root: Path) -> None:
-    """Spawn the new version and exit this process.
+    """Replace the running process with the new version.
 
-    The new process is detached - we don't want it tied to our process group
-    or it'd die when we exit. After spawning, we exit immediately so the
-    window closes and the new version's window opens.
+    Race condition we have to handle: when we exit and spawn the new process,
+    Windows holds our TCP socket in TIME_WAIT for some time after we die.
+    The new process tries to bind the same port (8731) and fails. Result is
+    "can't reach this page" in the new app even though the .exe launched.
 
-    On Windows we use CREATE_NEW_PROCESS_GROUP and DETACHED_PROCESS.
-    On Mac/Linux we use os.spawn with the no-wait flag.
+    Fix: write a tiny launcher .bat that
+      1. Waits 2 seconds (long enough for our socket to release)
+      2. Starts the new exe
+
+    Then we exit IMMEDIATELY (no sleep, no overlap). The launcher script
+    holds the gap between processes. After spawning the launcher we use
+    os._exit() to bypass any cleanup that could hold the port longer.
     """
     exe_name = "ListingStudio.exe" if os.name == "nt" else "ListingStudio"
     exe_path = install_root / exe_name
@@ -372,26 +378,53 @@ def restart_into(install_root: Path) -> None:
     logger.info("Restarting into %s", exe_path)
 
     if os.name == "nt":
-        # Windows: detached process so it survives our exit
+        # Write a launcher .bat that waits for our process and port to clear,
+        # then starts the new exe. We don't use Popen directly because we
+        # need the new process to start AFTER we've fully died.
+        launcher_path = settings.data_dir / "_relaunch.bat"
+        launcher_content = (
+            "@echo off\r\n"
+            # Wait 3 seconds for the old process and TIME_WAIT to clear.
+            # ping is the standard idiom for "wait N seconds" in batch.
+            "ping 127.0.0.1 -n 4 > nul\r\n"
+            # Launch new exe detached from this script
+            f'start "" "{exe_path}"\r\n'
+            # Delete this script after we're done (we don't litter %LOCALAPPDATA%)
+            'del "%~f0"\r\n'
+        )
+        launcher_path.write_text(launcher_content, encoding="ascii")
+
+        # Spawn the launcher detached so it survives our exit
         CREATE_NEW_PROCESS_GROUP = 0x00000200
         DETACHED_PROCESS = 0x00000008
+        CREATE_NO_WINDOW = 0x08000000
         subprocess.Popen(
-            [str(exe_path)],
+            ["cmd.exe", "/c", str(launcher_path)],
             cwd=str(install_root),
-            creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
+            creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW,
             close_fds=True,
         )
     else:
-        # macOS / Linux: fork+exec via subprocess, detached
+        # macOS / Linux: same idea but with a shell script
+        launcher_path = settings.data_dir / "_relaunch.sh"
+        launcher_content = (
+            "#!/bin/sh\n"
+            "sleep 3\n"
+            f'"{exe_path}" &\n'
+            f'rm -- "$0"\n'
+        )
+        launcher_path.write_text(launcher_content, encoding="ascii")
+        launcher_path.chmod(0o755)
         subprocess.Popen(
-            [str(exe_path)],
+            [str(launcher_path)],
             cwd=str(install_root),
             start_new_session=True,
             close_fds=True,
         )
 
-    # Give the new process a moment to start before we exit
-    time.sleep(0.5)
+    # Exit immediately - don't sleep, don't wait. The launcher takes it from here.
+    # os._exit bypasses Python's normal shutdown hooks (atexit, daemon threads)
+    # which could otherwise hold the socket open longer.
     os._exit(0)
 
 

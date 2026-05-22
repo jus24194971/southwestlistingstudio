@@ -31,18 +31,46 @@ logger = logging.getLogger(__name__)
 
 
 def _run_uvicorn() -> None:
-    """Run uvicorn in this thread, blocking forever."""
+    """Run uvicorn in this thread, blocking forever.
+
+    Retries binding for up to ~15 seconds if the port is in use. This handles
+    the case where we restarted after an auto-update and the old process's
+    socket is still in TIME_WAIT. Without retry, the new process would die
+    on startup and the user would see "can't reach this page".
+    """
     # Lower the access-log noise; we don't need a line per UI request
     log_config = uvicorn.config.LOGGING_CONFIG  # type: ignore[attr-defined]
     log_config["loggers"]["uvicorn.access"]["level"] = "WARNING"
 
-    uvicorn.run(
-        fastapi_app,
-        host=settings.api_host,
-        port=settings.api_port,
-        log_level="info",
-        log_config=log_config,
-        # No reload - we're embedded, not in dev mode
+    last_error = None
+    for attempt in range(15):  # ~15 attempts at 1s apart
+        try:
+            uvicorn.run(
+                fastapi_app,
+                host=settings.api_host,
+                port=settings.api_port,
+                log_level="info",
+                log_config=log_config,
+                # No reload - we're embedded, not in dev mode
+            )
+            return  # uvicorn.run blocks; if it returns, we shut down cleanly
+        except OSError as exc:
+            # Errno 10048 = WSAEADDRINUSE on Windows; 98 = EADDRINUSE on Unix
+            if getattr(exc, "errno", None) in (10048, 98) or "address already in use" in str(exc).lower():
+                last_error = exc
+                logger.warning(
+                    "Port %s busy on attempt %d/15, retrying in 1s",
+                    settings.api_port, attempt + 1,
+                )
+                time.sleep(1.0)
+                continue
+            raise  # Different error - don't swallow
+
+    logger.error("Failed to bind port %s after 15 attempts: %s",
+                 settings.api_port, last_error)
+    raise RuntimeError(
+        f"Could not bind port {settings.api_port} after retries. "
+        f"Another Listing Studio instance may already be running."
     )
 
 
@@ -59,8 +87,13 @@ def _start_api_thread() -> threading.Thread:
     return t
 
 
-def _wait_for_api(timeout_seconds: float = 5.0) -> bool:
-    """Poll the local API until it responds (or we time out)."""
+def _wait_for_api(timeout_seconds: float = 20.0) -> bool:
+    """Poll the local API until it responds (or we time out).
+
+    Timeout is generous (20s) to handle the post-update restart case where
+    uvicorn may be retrying the bind while the old process's socket clears
+    out of TIME_WAIT.
+    """
     import httpx
 
     start = time.monotonic()
