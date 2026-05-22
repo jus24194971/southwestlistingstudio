@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 # GitHub repo where releases are published. Set to None to disable updates.
 # When you create the repo, update this to "yourname/listing-studio" or similar.
-GITHUB_REPO: str | None = "southwestacoustics/listing-studio"
+GITHUB_REPO: str | None = "jus24194971/southwestlistingstudio"
 
 # How long to cache "no update available" before re-checking (during a long session)
 RECHECK_INTERVAL_SECONDS = 6 * 60 * 60  # 6 hours
