@@ -40,9 +40,10 @@
     function wireToolbar() {
         LS.$("btn-history").addEventListener("click", () => LS.showView("history"));
         LS.$("btn-settings").addEventListener("click", () => LS.showView("settings"));
-        LS.$("btn-new-template").addEventListener("click", () => {
-            alert("New template: not yet implemented");
-        });
+        // Note: the "New Template" / "New Category" buttons are rendered by
+        // library.js into the sidebar footer and wire their own click handlers.
+        // We used to have a static btn-new-template here too, but it's been
+        // replaced - don't reach for it (the element is gone).
     }
 
     function wireSearch() {

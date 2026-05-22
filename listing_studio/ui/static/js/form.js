@@ -635,21 +635,51 @@
             </div>
         `;
         if (result.url) {
-            const openBtn = LS.el("a");
-            openBtn.href = result.url;
-            openBtn.target = "_blank";
-            openBtn.textContent = "→ Open Draft on Reverb";
+            const openBtn = LS.el("button");
+            openBtn.textContent = "→ Open Draft + Photos Folder";
+            openBtn.title = "Opens the draft on Reverb in your browser AND opens the photos folder in Explorer for drag-and-drop";
             Object.assign(openBtn.style, {
                 display: "inline-block",
                 padding: "8px 14px",
                 background: "var(--gold-bright)",
                 color: "var(--bg-deep)",
-                textDecoration: "none",
+                border: "none",
                 borderRadius: "4px",
                 fontWeight: "600",
                 fontSize: "13px",
+                cursor: "pointer",
+            });
+            openBtn.addEventListener("click", async () => {
+                // Open the Reverb draft in a new tab first
+                window.open(result.url, "_blank");
+
+                // Then ask the backend to open the photo folder. Don't await
+                // the alert if it fails - the draft tab already opened, which
+                // is the more important part.
+                try {
+                    await LS.api(
+                        "POST",
+                        `/api/templates/${LS.state.currentTemplate.id}/open-photo-folder`,
+                    );
+                } catch (err) {
+                    console.warn("Couldn't open photo folder:", err);
+                    // Soft-fail: show a small notice but don't block
+                    const notice = LS.el("div");
+                    notice.style.marginTop = "8px";
+                    notice.style.fontSize = "11px";
+                    notice.style.color = "var(--rust-bright)";
+                    notice.textContent = `Couldn't open photo folder: ${err.message}`;
+                    nextStep.appendChild(notice);
+                }
             });
             nextStep.appendChild(openBtn);
+
+            // Backup plain link in case the button fails (e.g. popup blocker)
+            const fallback = LS.el("div");
+            fallback.style.marginTop = "8px";
+            fallback.style.fontSize = "11px";
+            fallback.innerHTML = `<a href="${result.url}" target="_blank" style="color: var(--ink-3);">or open just the draft →</a>`;
+            nextStep.appendChild(fallback);
         }
         card.appendChild(nextStep);
 

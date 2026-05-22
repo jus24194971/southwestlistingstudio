@@ -1084,6 +1084,72 @@ async def post_template_to_reverb(template_id: int, payload: dict | None = None)
     }
 
 
+@app.post("/api/templates/{template_id}/open-photo-folder")
+async def open_template_photo_folder(template_id: int) -> dict:
+    """Open Windows Explorer at the folder containing this template's photos.
+
+    Pairs with the "Open Draft on Reverb" flow: Dad gets the Reverb draft
+    edit page in his browser and Explorer pointing at the photos folder,
+    side by side, for an easy drag-and-drop.
+
+    If the template has photos from multiple folders, we open the deepest
+    common ancestor. If it has no photos at all, we 400.
+
+    Returns:
+        {"opened_path": "Z:\\\\..."}  # the path we opened
+    """
+    import os
+    import subprocess
+    import sys
+    from listing_studio.core.models import Template
+
+    with session_scope() as session:
+        template = session.get(Template, template_id)
+        if template is None:
+            raise HTTPException(404, f"Template {template_id} not found")
+
+        photo_paths = [p.source_path for p in template.photos]
+
+    if not photo_paths:
+        raise HTTPException(400, "This template has no photos attached.")
+
+    # Compute the folder to open. If all photos share a parent directory,
+    # use that. Otherwise fall back to the deepest common ancestor across
+    # all photos. This handles both "all photos in one folder" (the common
+    # case) and "photos pulled from multiple folders" (rare but possible).
+    photo_parents = [str(Path(p).parent) for p in photo_paths]
+    if len(set(photo_parents)) == 1:
+        folder_to_open = photo_parents[0]
+    else:
+        folder_to_open = os.path.commonpath(photo_parents)
+
+    folder_path = Path(folder_to_open)
+    if not folder_path.exists():
+        raise HTTPException(
+            404,
+            f"Photo folder no longer exists: {folder_to_open}. "
+            "The NAS may be disconnected or the folder was moved.",
+        )
+
+    # Open with the platform's file manager. On Windows we use Explorer
+    # explicitly so we can also select a file if useful (we don't bother
+    # selecting since the photos are usually adjacent and Dad wants to
+    # multi-select them all). On Linux/Mac we fall back to xdg-open / open
+    # for dev mode - Dad's machine is Windows so this is just safety.
+    try:
+        if sys.platform.startswith("win"):
+            # os.startfile is the simplest Windows-native folder open
+            os.startfile(str(folder_path))  # noqa: S606
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder_path)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder_path)])
+    except Exception as exc:
+        raise HTTPException(500, f"Couldn't open folder: {exc}") from exc
+
+    return {"opened_path": str(folder_path)}
+
+
 # ---------------------------------------------------------------------------
 # Static UI files
 # ---------------------------------------------------------------------------
