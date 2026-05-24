@@ -70,6 +70,7 @@ def create_template(session: Session, payload: TemplateCreate) -> Template:
         reverb_shipping_flat_cents=payload.reverb_shipping_flat_cents,
         ebay_shipping_type=payload.ebay_shipping_type,
         ebay_shipping_override_cents=payload.ebay_shipping_override_cents,
+        item_specifics=payload.item_specifics or {},
         platform_overrides={},
     )
     session.add(tmpl)

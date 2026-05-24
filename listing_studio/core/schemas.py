@@ -9,6 +9,7 @@ These are separate from the SQLAlchemy ORM models because:
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -217,6 +218,7 @@ class TemplateOut(BaseModel):
     reverb_shipping_flat_cents: int = 0
     ebay_shipping_type: str | None = None
     ebay_shipping_override_cents: int = 0
+    item_specifics: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
     last_posted_at: datetime | None
@@ -266,6 +268,7 @@ class TemplateCreate(BaseModel):
     reverb_shipping_flat_cents: int = 0
     ebay_shipping_type: str | None = None
     ebay_shipping_override_cents: int = 0
+    item_specifics: dict[str, Any] | None = None
 
 
 class TemplateUpdate(BaseModel):
@@ -295,6 +298,7 @@ class TemplateUpdate(BaseModel):
     reverb_shipping_flat_cents: int | None = None
     ebay_shipping_type: str | None = None
     ebay_shipping_override_cents: int | None = None
+    item_specifics: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------

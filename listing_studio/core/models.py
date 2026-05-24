@@ -241,6 +241,15 @@ class Template(Base):
     ebay_shipping_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     ebay_shipping_override_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # eBay item specifics ("aspects"). User-editable per template; merged
+    # with our auto-derived Brand/MPN/Model on post. Required aspects vary
+    # by category - eBay's getItemAspectsForCategory API tells us which
+    # ones are mandatory, and the UI prefills empty rows for them.
+    # Stored as {"AspectName": "value"} or {"AspectName": ["v1", "v2"]}
+    # for aspects that accept multiple values (rare). The connector wraps
+    # scalar strings in a list before submitting to eBay's API.
+    item_specifics: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=dict)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

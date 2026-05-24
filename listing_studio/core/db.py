@@ -129,6 +129,8 @@ def _run_migrations(engine: Engine) -> None:
             "reverb_shipping_flat_cents": "INTEGER NOT NULL DEFAULT 0",
             "ebay_shipping_type": "TEXT",
             "ebay_shipping_override_cents": "INTEGER NOT NULL DEFAULT 0",
+            # SQLite stores JSON columns as TEXT under the hood
+            "item_specifics": "TEXT",
         },
         "categories": {
             "ebay_category_id": "INTEGER",

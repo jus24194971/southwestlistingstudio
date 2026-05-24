@@ -1384,6 +1384,34 @@ async def get_ebay_policies() -> dict:
     return {**policies, "locations": locations}
 
 
+@app.get("/api/platforms/ebay/aspects")
+async def get_ebay_aspects(category_id: str) -> dict:
+    """Return the item-aspect schema eBay defines for ``category_id``.
+
+    Used by the form's Item Specifics editor to prefill required aspects
+    when Dad picks an eBay category. Read-only; uses the app token so it
+    works even without the user OAuth dance.
+
+    Response::
+
+        {
+            "aspects": [
+                {"name": "Type", "required": true, "values": ["Bridge Pickup", ...],
+                 "value_type": "STRING", "is_variation": false, "max_length": 65},
+                ...
+            ]
+        }
+    """
+    from listing_studio.platforms.ebay import EbayConnector
+
+    if not category_id or not str(category_id).strip():
+        raise HTTPException(400, "category_id is required")
+
+    connector = EbayConnector()
+    aspects = await connector.fetch_required_aspects(category_id)
+    return {"aspects": aspects}
+
+
 @app.post("/api/templates/{template_id}/post-to-ebay")
 async def post_template_to_ebay(template_id: int, payload: dict | None = None) -> dict:
     """Create an unpublished eBay offer (draft) from a template.
@@ -1445,6 +1473,9 @@ async def post_template_to_ebay(template_id: int, payload: dict | None = None) -
             ebay_category_id=ebay_category_id,
             ebay_shipping_type=template.ebay_shipping_type,
             ebay_shipping_override_cents=template.ebay_shipping_override_cents,
+            # Pass the user-edited item specifics through so they end up
+            # in inventory_item.product.aspects on the eBay payload.
+            item_specifics=dict(template.item_specifics or {}),
             category_id=template.category_id,
             category=type("C", (), {"ebay_category_id": ebay_category_id}),
         )

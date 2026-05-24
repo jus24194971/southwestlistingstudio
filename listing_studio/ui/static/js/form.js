@@ -295,9 +295,259 @@
         ebayShipHelp.textContent = "Overrides the first shipping service (priority 1) in your eBay fulfillment policy. Domestic only.";
         group.appendChild(ebayShipHelp);
 
+        // ---- eBay Item Specifics editor ----
+        group.appendChild(buildItemSpecificsEditor(tmpl));
+
         section.appendChild(group);
         return section;
     }
+
+    /**
+     * Item Specifics editor for eBay aspects. Renders as a key/value table
+     * the user can edit. The "Load required from eBay" button calls the
+     * aspects endpoint for the template's eBay category and prefills empty
+     * rows for any required aspect that isn't already set.
+     */
+    function buildItemSpecificsEditor(tmpl) {
+        const container = LS.el("div");
+        container.style.marginTop = "8px";
+        container.style.padding = "12px 14px";
+        container.style.background = "var(--bg-input)";
+        container.style.border = "1px solid var(--ink-3)";
+        container.style.borderRadius = "4px";
+
+        const headerRow = LS.el("div");
+        Object.assign(headerRow.style, {
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            marginBottom: "8px",
+        });
+
+        const title = LS.el("div");
+        title.style.fontSize = "13px";
+        title.style.fontWeight = "600";
+        title.style.color = "var(--ink-1)";
+        title.textContent = "eBay Item Specifics";
+        headerRow.appendChild(title);
+
+        const loadBtn = LS.el("button", "btn-ghost");
+        loadBtn.type = "button";
+        loadBtn.textContent = "↻ Load required from eBay";
+        loadBtn.title = "Fetch the required item-specifics for this template's eBay category and prefill empty rows.";
+        loadBtn.style.fontSize = "11px";
+        loadBtn.style.padding = "4px 10px";
+        headerRow.appendChild(loadBtn);
+        container.appendChild(headerRow);
+
+        const help = LS.el("div");
+        help.style.fontSize = "11px";
+        help.style.color = "var(--ink-3)";
+        help.style.marginBottom = "10px";
+        help.style.lineHeight = "1.45";
+        help.textContent = "eBay requires specific fields per category (Type, Position, Material, etc.). Fill in at least the required ones below or eBay will reject the publish.";
+        container.appendChild(help);
+
+        const rowsHost = LS.el("div");
+        rowsHost.id = "item-specifics-rows";
+        Object.assign(rowsHost.style, {
+            display: "flex",
+            flexDirection: "column",
+            gap: "6px",
+        });
+        container.appendChild(rowsHost);
+
+        const existing = tmpl.item_specifics || {};
+        const initialKeys = Object.keys(existing);
+        if (initialKeys.length === 0) {
+            // Start with one blank row so the UI isn't empty.
+            rowsHost.appendChild(buildSpecificsRow("", "", {required: false}));
+        } else {
+            for (const k of initialKeys) {
+                const v = Array.isArray(existing[k]) ? existing[k].join(", ") : existing[k];
+                rowsHost.appendChild(buildSpecificsRow(k, v || "", {required: false}));
+            }
+        }
+
+        const addBtn = LS.el("button", "btn-ghost");
+        addBtn.type = "button";
+        addBtn.textContent = "+ Add specific";
+        addBtn.style.fontSize = "11px";
+        addBtn.style.padding = "4px 10px";
+        addBtn.style.marginTop = "8px";
+        addBtn.addEventListener("click", () => {
+            rowsHost.appendChild(buildSpecificsRow("", "", {required: false}));
+        });
+        container.appendChild(addBtn);
+
+        const status = LS.el("div");
+        status.id = "item-specifics-status";
+        status.style.fontSize = "11px";
+        status.style.color = "var(--ink-3)";
+        status.style.marginTop = "8px";
+        status.style.minHeight = "14px";
+        container.appendChild(status);
+
+        loadBtn.addEventListener("click", async () => {
+            const categoryId = tmpl.category && tmpl.category.ebay_category_id;
+            if (!categoryId) {
+                status.style.color = "var(--gold-bright)";
+                status.textContent = "Set an eBay category on this template's Category first.";
+                return;
+            }
+            status.style.color = "var(--ink-3)";
+            status.textContent = "Loading aspects from eBay…";
+            loadBtn.disabled = true;
+            try {
+                const r = await fetch(`/api/platforms/ebay/aspects?category_id=${encodeURIComponent(categoryId)}`);
+                if (!r.ok) throw new Error(`HTTP ${r.status}`);
+                const data = await r.json();
+                const aspects = data.aspects || [];
+
+                // Build set of already-set keys (case-insensitive) so we
+                // don't double up.
+                const present = new Set();
+                rowsHost.querySelectorAll("input[data-role='key']").forEach(inp => {
+                    if (inp.value.trim()) present.add(inp.value.trim().toLowerCase());
+                });
+
+                let addedRequired = 0;
+                let addedOptional = 0;
+                for (const asp of aspects) {
+                    if (present.has(asp.name.toLowerCase())) continue;
+                    if (asp.required) {
+                        rowsHost.appendChild(buildSpecificsRow(asp.name, "", {
+                            required: true,
+                            suggestions: asp.values || [],
+                        }));
+                        addedRequired += 1;
+                    }
+                }
+                // Also flag any existing rows that match required-aspect names.
+                rowsHost.querySelectorAll("input[data-role='key']").forEach(inp => {
+                    const match = aspects.find(a => a.name.toLowerCase() === inp.value.trim().toLowerCase());
+                    if (match && match.required) {
+                        const row = inp.closest(".specifics-row");
+                        if (row) row.classList.add("required");
+                    }
+                });
+
+                status.style.color = "var(--moss-bright)";
+                status.textContent =
+                    `Loaded ${aspects.length} aspects · ${addedRequired} required added · ${addedOptional} optional skipped (add manually below).`;
+            } catch (err) {
+                status.style.color = "var(--rust-bright)";
+                status.textContent = `Couldn't load: ${err.message}`;
+            } finally {
+                loadBtn.disabled = false;
+            }
+        });
+
+        return container;
+    }
+
+    function buildSpecificsRow(key, value, opts) {
+        const row = LS.el("div", "specifics-row" + (opts && opts.required ? " required" : ""));
+        Object.assign(row.style, {
+            display: "grid",
+            gridTemplateColumns: "200px 1fr auto",
+            gap: "8px",
+            alignItems: "center",
+        });
+
+        const keyInput = LS.el("input");
+        keyInput.type = "text";
+        keyInput.placeholder = "Aspect name (e.g. Type)";
+        keyInput.value = key || "";
+        keyInput.dataset.role = "key";
+        Object.assign(keyInput.style, {
+            padding: "6px 8px",
+            background: "var(--bg-deep)",
+            border: "1px solid " + (opts && opts.required ? "var(--gold-bright)" : "var(--ink-3)"),
+            borderRadius: "3px",
+            color: "var(--ink-1)",
+            fontSize: "12px",
+            fontFamily: "var(--font-mono)",
+        });
+        row.appendChild(keyInput);
+
+        const valInput = LS.el("input");
+        valInput.type = "text";
+        valInput.placeholder = (opts && opts.required)
+            ? "Required value"
+            : "Value";
+        valInput.value = value || "";
+        valInput.dataset.role = "value";
+        Object.assign(valInput.style, {
+            padding: "6px 8px",
+            background: "var(--bg-deep)",
+            border: "1px solid var(--ink-3)",
+            borderRadius: "3px",
+            color: "var(--ink-1)",
+            fontSize: "12px",
+        });
+        // If eBay gave us a constrained list, render as a datalist for autocomplete.
+        if (opts && opts.suggestions && opts.suggestions.length > 0) {
+            const listId = "ds-" + Math.random().toString(36).slice(2, 8);
+            const datalist = LS.el("datalist");
+            datalist.id = listId;
+            for (const s of opts.suggestions) {
+                const o = LS.el("option");
+                o.value = s;
+                datalist.appendChild(o);
+            }
+            valInput.setAttribute("list", listId);
+            row.appendChild(datalist);
+        }
+        row.appendChild(valInput);
+
+        const rm = LS.el("button", "btn-ghost");
+        rm.type = "button";
+        rm.textContent = "✕";
+        rm.title = "Remove";
+        rm.style.padding = "2px 8px";
+        rm.style.fontSize = "12px";
+        rm.style.color = "var(--ink-3)";
+        rm.addEventListener("click", () => {
+            row.remove();
+            if (typeof markDirty === "function") markDirty();
+        });
+        row.appendChild(rm);
+
+        // Mark form dirty on any input change.
+        keyInput.addEventListener("input", () => { if (typeof markDirty === "function") markDirty(); });
+        valInput.addEventListener("input", () => { if (typeof markDirty === "function") markDirty(); });
+
+        if (opts && opts.required) {
+            const badge = LS.el("div");
+            badge.style.gridColumn = "1 / -1";
+            badge.style.fontSize = "10px";
+            badge.style.color = "var(--gold-bright)";
+            badge.style.fontStyle = "italic";
+            badge.style.marginTop = "-2px";
+            badge.style.marginLeft = "4px";
+            badge.textContent = "eBay required";
+            row.appendChild(badge);
+        }
+
+        return row;
+    }
+
+    function collectItemSpecifics() {
+        const out = {};
+        const rows = document.querySelectorAll("#item-specifics-rows .specifics-row");
+        rows.forEach(row => {
+            const key = row.querySelector("input[data-role='key']");
+            const val = row.querySelector("input[data-role='value']");
+            if (key && val) {
+                const k = key.value.trim();
+                const v = val.value.trim();
+                if (k && v) out[k] = v;
+            }
+        });
+        return out;
+    }
+    LS.collectItemSpecifics = collectItemSpecifics;
 
     function buildPhotosSection(tmpl) {
         const section = LS.el("div", "section");
@@ -605,6 +855,12 @@
         });
         form.platform_overrides = overrides;
         form.default_platforms = Array.from(LS.state.enabledPlatforms);
+
+        // eBay item specifics (aspects) live in their own editor section,
+        // not in the [name]'d form fields, so gather separately.
+        if (typeof LS.collectItemSpecifics === "function") {
+            form.item_specifics = LS.collectItemSpecifics();
+        }
 
         return form;
     }

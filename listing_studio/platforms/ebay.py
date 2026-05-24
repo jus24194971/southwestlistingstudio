@@ -723,6 +723,80 @@ class EbayConnector(PlatformConnector):
         if response.status_code not in (200, 201, 204):
             _raise_ebay_error(self.platform, "location creation", response)
 
+    async def fetch_required_aspects(self, category_id: str | int) -> list[dict]:
+        """Return the item aspect schema eBay defines for ``category_id``.
+
+        Hits ``/commerce/taxonomy/v1/category_tree/{tree}/get_item_aspects_for_category``.
+        Each aspect comes back as:
+
+            {
+                "name":      "Type",
+                "required":  True,
+                "values":    ["Bridge Pickup", "Neck Pickup", ...],  # may be empty
+                "value_type": "STRING" | "STRING_ARRAY" | "NUMERIC",
+                "is_variation": False
+            }
+
+        The eBay endpoint accepts the app token (read-only), so works
+        without the user OAuth dance. Returns ``[]`` on any failure -
+        the UI degrades to "just enter aspects manually" mode.
+        """
+        category_id = str(category_id)
+        async with httpx.AsyncClient(timeout=self.TIMEOUT_SECONDS) as client:
+            try:
+                token = await self._get_app_token(client)
+            except PostingError as exc:
+                logger.warning("eBay aspects: app token unavailable: %s", exc)
+                return []
+            url = (
+                f"{self.BASE_URL}/commerce/taxonomy/v1/category_tree/"
+                f"{EBAY_US_TREE_ID}/get_item_aspects_for_category"
+            )
+            try:
+                response = await client.get(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {token}",
+                        "Accept": "application/json",
+                        "User-Agent": self.USER_AGENT,
+                    },
+                    params={"category_id": category_id},
+                )
+            except httpx.RequestError as exc:
+                logger.warning("eBay aspects request failed: %s", exc)
+                return []
+            if response.status_code != 200:
+                logger.warning(
+                    "eBay aspects for %s returned HTTP %d: %s",
+                    category_id, response.status_code, response.text[:300],
+                )
+                return []
+
+            data = response.json()
+            out: list[dict] = []
+            for asp in data.get("aspects") or []:
+                name = asp.get("localizedAspectName") or asp.get("aspectName")
+                if not name:
+                    continue
+                constraint = asp.get("aspectConstraint") or {}
+                # Values list, if eBay constrains them.
+                vals = []
+                for vobj in asp.get("aspectValues") or []:
+                    label = vobj.get("localizedValue") or vobj.get("value")
+                    if label:
+                        vals.append(label)
+                out.append({
+                    "name": name,
+                    "required": bool(constraint.get("aspectRequired")),
+                    "values": vals,
+                    "value_type": constraint.get("aspectDataType") or "STRING",
+                    "is_variation": bool(constraint.get("itemToAspectCardinality") == "MULTI"),
+                    "max_length": constraint.get("aspectMaxLength"),
+                })
+            # Sort: required first, then alphabetical.
+            out.sort(key=lambda a: (0 if a["required"] else 1, a["name"].lower()))
+            return out
+
     async def fetch_merchant_locations(self) -> list[dict]:
         """Return the seller's inventory locations.
 
@@ -947,15 +1021,29 @@ class EbayConnector(PlatformConnector):
         else:
             description_html = f"<p>{html.escape(template.title or '')}</p>"
 
-        # Item specifics ("aspects" in eBay's vocabulary). At minimum we
-        # supply Brand and MPN; some categories require more, and eBay will
-        # tell us via the create-listing validation error. The user iterates.
+        # Item specifics ("aspects" in eBay's vocabulary). Start with our
+        # auto-derived Brand/MPN/Model from the template's basic fields,
+        # then layer the user-edited template.item_specifics on top (user
+        # value wins). eBay's required aspects vary per category - the UI
+        # lets the user fetch the schema and fill the required ones.
         aspects: dict[str, list[str]] = {}
         if template.brand:
             aspects["Brand"] = [template.brand]
         if getattr(template, "model", None):
             aspects["MPN"] = [str(template.model)]
             aspects["Model"] = [str(template.model)]
+
+        user_aspects = getattr(template, "item_specifics", None) or {}
+        if isinstance(user_aspects, dict):
+            for key, value in user_aspects.items():
+                if value in (None, "", []):
+                    continue
+                if isinstance(value, list):
+                    cleaned = [str(v).strip() for v in value if str(v).strip()]
+                else:
+                    cleaned = [str(value).strip()] if str(value).strip() else []
+                if cleaned:
+                    aspects[str(key).strip()] = cleaned
 
         # ---- Step 1: PUT inventory item (upsert by SKU) ----
         inventory_payload = {
