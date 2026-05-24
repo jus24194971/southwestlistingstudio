@@ -1248,6 +1248,200 @@ async def search_ebay_taxonomy(q: str = "", limit: int = 30) -> list[dict]:
     return matches
 
 
+@app.get("/api/platforms/ebay/policies")
+async def get_ebay_policies() -> dict:
+    """Return Dad's eBay business policies + merchant locations.
+
+    Offers (drafts and live alike) require references to fulfillment/
+    payment/return policy IDs and a merchantLocationKey. Most sellers have
+    exactly one of each; the post endpoint auto-picks the first by default.
+
+    Response shape::
+
+        {
+            "fulfillment": [{"id": "...", "name": "..."}],
+            "payment":     [{"id": "...", "name": "..."}],
+            "return":      [{"id": "...", "name": "..."}],
+            "locations":   [{"key": "...", "name": "..."}]
+        }
+    """
+    from listing_studio.platforms.ebay import EbayConnector
+
+    connector = EbayConnector()
+    if not connector.has_user_token():
+        return {"fulfillment": [], "payment": [], "return": [], "locations": []}
+
+    policies = await connector.fetch_business_policies()
+    locations = await connector.fetch_merchant_locations()
+    return {**policies, "locations": locations}
+
+
+@app.post("/api/templates/{template_id}/post-to-ebay")
+async def post_template_to_ebay(template_id: int, payload: dict | None = None) -> dict:
+    """Create an unpublished eBay offer (draft) from a template.
+
+    Mirrors post_template_to_reverb's flow:
+        1. Snapshot template + photo paths from the session
+        2. Normalize + upload each photo to the configured image host
+        3. Auto-pick first of each eBay business policy + first location
+           (overridable via payload), then create_draft on the connector
+
+    Body (all optional):
+        {
+            "fulfillment_policy_id": "...",
+            "payment_policy_id":     "...",
+            "return_policy_id":      "...",
+            "merchant_location_key": "...",
+            "skip_photos":           false
+        }
+    """
+    from listing_studio.core.models import Template
+    from listing_studio.core.photo_host import get_configured_host
+    from listing_studio.core.photo_processor import (
+        NormalizeError,
+        normalize_for_upload,
+    )
+    from listing_studio.platforms.base import PostingError
+    from listing_studio.platforms.ebay import EbayConnector
+
+    payload = payload or {}
+    skip_photos = bool(payload.get("skip_photos", False))
+
+    with session_scope() as session:
+        template = session.get(Template, template_id)
+        if template is None:
+            raise HTTPException(404, f"Template {template_id} not found")
+
+        photo_paths = sorted(
+            [(p.sort_order, p.source_path) for p in template.photos],
+            key=lambda x: x[0],
+        )
+        photo_paths = [path for (_o, path) in photo_paths]
+
+        # Pull the category's eBay mapping so we can fail fast if missing.
+        ebay_category_id = None
+        if template.category_id and template.category:
+            ebay_category_id = template.category.ebay_category_id
+
+        # Snapshot all the template fields we need for the async call
+        template_copy = _SimpleNamespace(
+            id=template.id,
+            name=template.name,
+            title=template.title,
+            description=template.description,
+            brand=template.brand,
+            model=template.model,
+            condition=template.condition,
+            base_price_cents=template.base_price_cents,
+            quantity=template.quantity,
+            ebay_category_id=ebay_category_id,
+            category_id=template.category_id,
+            category=type("C", (), {"ebay_category_id": ebay_category_id}),
+        )
+
+    connector = EbayConnector()
+    if not await connector.is_connected():
+        raise HTTPException(400, "eBay app credentials not configured. Connect in Settings.")
+    if not connector.has_user_token():
+        raise HTTPException(400, "eBay seller account not authorized. Connect via Settings → eBay → Authorize Seller Account.")
+
+    # ---- Resolve business policies (auto-pick first if not specified) ----
+    fulfillment_id = payload.get("fulfillment_policy_id")
+    payment_id = payload.get("payment_policy_id")
+    return_id = payload.get("return_policy_id")
+    location_key = payload.get("merchant_location_key")
+
+    if not (fulfillment_id and payment_id and return_id and location_key):
+        policies = await connector.fetch_business_policies()
+        locations = await connector.fetch_merchant_locations()
+
+        if not fulfillment_id:
+            if not policies["fulfillment"]:
+                raise HTTPException(400, "No fulfillment policy found on eBay account. Create one in Seller Hub → Account → Business Policies.")
+            fulfillment_id = policies["fulfillment"][0]["id"]
+        if not payment_id:
+            if not policies["payment"]:
+                raise HTTPException(400, "No payment policy found on eBay account. Create one in Seller Hub.")
+            payment_id = policies["payment"][0]["id"]
+        if not return_id:
+            if not policies["return"]:
+                raise HTTPException(400, "No return policy found on eBay account. Create one in Seller Hub.")
+            return_id = policies["return"][0]["id"]
+        if not location_key:
+            if not locations:
+                raise HTTPException(400, "No merchant location found on eBay account. Add one in Seller Hub → Account → Locations.")
+            location_key = locations[0]["key"]
+
+    # ---- Photo pre-upload (same pipeline as Reverb) ----
+    photo_results: dict = {
+        "uploaded": 0, "failed": 0, "errors": [],
+        "host_configured": False, "host_display_name": None,
+    }
+    photo_urls: list[str] = []
+
+    host = None if skip_photos else get_configured_host()
+    if host is not None:
+        photo_results["host_configured"] = True
+        photo_results["host_display_name"] = host.display_name
+
+    if host is not None and photo_paths:
+        from pathlib import Path as PathLib
+        from listing_studio.core.photo_host import PhotoHostError
+
+        for idx, photo_path_str in enumerate(photo_paths):
+            photo_path = PathLib(photo_path_str)
+            try:
+                normalized = normalize_for_upload(photo_path)
+                upload_filename = f"{idx + 1:02d}_{normalized.filename}"
+                url = await host.upload(normalized.data, upload_filename)
+                photo_urls.append(url)
+                photo_results["uploaded"] += 1
+            except (NormalizeError, PhotoHostError) as exc:
+                photo_results["failed"] += 1
+                photo_results["errors"].append(f"{photo_path.name}: {exc}")
+            except Exception as exc:  # noqa: BLE001 - photo failure shouldn't block listing
+                photo_results["failed"] += 1
+                photo_results["errors"].append(f"{photo_path.name}: {type(exc).__name__}: {exc}")
+
+    # ---- Create the draft ----
+    try:
+        result = await connector.create_draft(
+            template_copy,
+            photo_urls=photo_urls,
+            fulfillment_policy_id=fulfillment_id,
+            payment_policy_id=payment_id,
+            return_policy_id=return_id,
+            merchant_location_key=location_key,
+        )
+    except PostingError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    return {
+        "sku": result["sku"],
+        "offer_id": result.get("offer_id"),
+        "url": result.get("url"),
+        "photo_results": photo_results,
+        "policies_used": {
+            "fulfillment_policy_id": fulfillment_id,
+            "payment_policy_id": payment_id,
+            "return_policy_id": return_id,
+            "merchant_location_key": location_key,
+        },
+    }
+
+
+class _SimpleNamespace:
+    """Minimal stand-in for a Template across session boundaries.
+
+    Used by post_template_to_ebay (and elsewhere) so we can call connector
+    methods after the SQLAlchemy session has closed without copying a
+    detached ORM instance.
+    """
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
 @app.get("/api/platforms/squarespace/store-pages")
 async def get_squarespace_store_pages() -> list[dict]:
     """Return the Squarespace store pages discoverable from existing products.

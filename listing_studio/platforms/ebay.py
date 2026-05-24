@@ -68,8 +68,29 @@ EBAY_USER_SCOPES = [
     "https://api.ebay.com/oauth/api_scope",
     "https://api.ebay.com/oauth/api_scope/sell.inventory",
     "https://api.ebay.com/oauth/api_scope/sell.account.readonly",
+    "https://api.ebay.com/oauth/api_scope/sell.account",
     "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
 ]
+
+# Map our internal condition strings to eBay's numeric condition IDs.
+# eBay validates these per-category - some categories reject "Used" etc.
+# These are our best-fit defaults; if eBay rejects, the user fixes per
+# template via platform_overrides later.
+EBAY_CONDITION_IDS = {
+    "brand_new": 1000,        # New
+    "new_old_stock": 1500,    # New Other (closest match for NOS)
+    "mint": 1500,
+    "excellent": 3000,        # Used (eBay has no "Excellent" - 3000 is best generic)
+    "very_good": 3000,
+    "good": 3000,
+    "fair": 3000,
+    "poor": 7000,             # For parts or not working
+    "b_stock": 1500,
+    "non_functioning": 7000,
+}
+
+# US marketplace identifier eBay uses across the sell APIs.
+EBAY_MARKETPLACE_ID = "EBAY_US"
 
 # eBay's OAuth endpoints. Auth happens on auth.ebay.com (consent UI);
 # token exchange happens on api.ebay.com (REST). Both are production -
@@ -557,13 +578,283 @@ class EbayConnector(PlatformConnector):
         return [entry for (_s, _l, _n, entry) in scored[:limit]]
 
     # ------------------------------------------------------------------
-    # Posting (still a stub — needs user OAuth + inventory/offer wiring)
+    # Business policies + merchant locations (required for offer creation)
+    # ------------------------------------------------------------------
+
+    async def fetch_business_policies(self) -> dict[str, list[dict]]:
+        """Return the seller's payment, return, and fulfillment policies.
+
+        Output shape (JSON-friendly for the API layer):
+            {
+                "fulfillment": [{"id": "...", "name": "..."}],
+                "payment":     [{"id": "...", "name": "..."}],
+                "return":      [{"id": "...", "name": "..."}],
+            }
+
+        Returns empty lists for any kind that's missing or fails to fetch -
+        the offer creation step will surface a clear error if a required
+        policy isn't set up in eBay Seller Hub.
+        """
+        if not self.has_user_token():
+            return {"fulfillment": [], "payment": [], "return": []}
+
+        async with httpx.AsyncClient(timeout=self.TIMEOUT_SECONDS) as client:
+            try:
+                token = await self._get_user_token(client)
+            except PostingError:
+                return {"fulfillment": [], "payment": [], "return": []}
+
+            results: dict[str, list[dict]] = {
+                "fulfillment": [],
+                "payment": [],
+                "return": [],
+            }
+
+            # Each kind has the same shape: a list under the matching key
+            endpoints = {
+                "fulfillment": "/sell/account/v1/fulfillment_policy",
+                "payment":     "/sell/account/v1/payment_policy",
+                "return":      "/sell/account/v1/return_policy",
+            }
+            response_keys = {
+                "fulfillment": "fulfillmentPolicies",
+                "payment":     "paymentPolicies",
+                "return":      "returnPolicies",
+            }
+            id_keys = {
+                "fulfillment": "fulfillmentPolicyId",
+                "payment":     "paymentPolicyId",
+                "return":      "returnPolicyId",
+            }
+
+            for kind, path in endpoints.items():
+                try:
+                    response = await client.get(
+                        f"{self.BASE_URL}{path}",
+                        headers=self._bearer_headers(token),
+                        params={"marketplace_id": EBAY_MARKETPLACE_ID},
+                    )
+                except httpx.RequestError as exc:
+                    logger.warning("eBay %s policies fetch failed: %s", kind, exc)
+                    continue
+                if response.status_code != 200:
+                    logger.warning(
+                        "eBay %s policies returned %d: %s",
+                        kind, response.status_code, response.text[:200],
+                    )
+                    continue
+                data = response.json()
+                for policy in data.get(response_keys[kind], []):
+                    pid = policy.get(id_keys[kind])
+                    name = policy.get("name") or "(unnamed)"
+                    if pid:
+                        results[kind].append({"id": str(pid), "name": name})
+
+            return results
+
+    async def fetch_merchant_locations(self) -> list[dict]:
+        """Return the seller's inventory locations.
+
+        Offers require a merchantLocationKey. Most sellers have exactly one
+        (their warehouse / home). Returns ``[{key, name}]``; empty if none
+        exist or the call fails.
+        """
+        if not self.has_user_token():
+            return []
+        async with httpx.AsyncClient(timeout=self.TIMEOUT_SECONDS) as client:
+            try:
+                token = await self._get_user_token(client)
+                response = await client.get(
+                    f"{self.BASE_URL}/sell/inventory/v1/location",
+                    headers=self._bearer_headers(token),
+                )
+            except (PostingError, httpx.RequestError) as exc:
+                logger.warning("eBay locations fetch failed: %s", exc)
+                return []
+            if response.status_code != 200:
+                logger.warning("eBay locations returned %d", response.status_code)
+                return []
+            data = response.json()
+            out = []
+            for loc in data.get("locations", []):
+                key = loc.get("merchantLocationKey")
+                name = loc.get("name") or loc.get("location", {}).get("address", {}).get("city") or "(location)"
+                if key:
+                    out.append({"key": key, "name": name})
+            return out
+
+    # ------------------------------------------------------------------
+    # Draft listing creation (inventory_item + offer, unpublished)
+    # ------------------------------------------------------------------
+
+    async def create_draft(
+        self,
+        template,
+        photo_urls: list[str] | None = None,
+        fulfillment_policy_id: str | None = None,
+        payment_policy_id: str | None = None,
+        return_policy_id: str | None = None,
+        merchant_location_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Create an unpublished eBay offer (draft) from a template.
+
+        Two API calls:
+          1. PUT /sell/inventory/v1/inventory_item/{sku} - upserts the product
+          2. POST /sell/inventory/v1/offer - creates the unpublished offer
+
+        We deliberately skip the publish step so the seller can review in
+        Seller Hub before going live - same pattern as Reverb's drafts.
+
+        Returns:
+            {
+                "sku": "ls-NNN",
+                "offer_id": "...",
+                "url": "https://www.ebay.com/sh/lst/drafts",
+                "raw_inventory": {...},
+                "raw_offer": {...}
+            }
+
+        Raises PostingError with a human-readable detail on any failure.
+        eBay's validation messages are verbose; we surface the first one
+        in the message and stash the rest in the raised exception.
+        """
+        if not self.has_user_token():
+            raise PostingError(
+                self.platform,
+                "Seller account not authorized. Connect via Settings → eBay → Authorize Seller Account.",
+                is_auth_error=True,
+            )
+
+        category_id = getattr(template, "ebay_category_id", None)
+        if not category_id:
+            raise PostingError(
+                self.platform,
+                "No eBay category set on this template's Category. Open Categories and pick an eBay leaf.",
+            )
+
+        # SKU: stable per-template ID so PUT inventory_item upserts cleanly.
+        sku = f"ls-{template.id}"
+        price_value = f"{template.base_price_cents / 100:.2f}"
+        condition_id = EBAY_CONDITION_IDS.get(template.condition, 1500)
+
+        # eBay wants HTML in listingDescription. The template's description
+        # is plaintext-ish; wrap newlines and double-newlines in <br>/<p>
+        # so it renders cleanly in eBay's preview.
+        raw_desc = (template.description or "").strip()
+        if raw_desc:
+            paragraphs = [p.strip() for p in raw_desc.split("\n\n") if p.strip()]
+            description_html = "".join(
+                f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs
+            )
+        else:
+            description_html = f"<p>{template.title}</p>"
+
+        # Item specifics ("aspects" in eBay's vocabulary). At minimum we
+        # supply Brand and MPN; some categories require more, and eBay will
+        # tell us via the create-listing validation error. The user iterates.
+        aspects: dict[str, list[str]] = {}
+        if template.brand:
+            aspects["Brand"] = [template.brand]
+        if getattr(template, "model", None):
+            aspects["MPN"] = [str(template.model)]
+            aspects["Model"] = [str(template.model)]
+
+        # ---- Step 1: PUT inventory item (upsert by SKU) ----
+        inventory_payload = {
+            "availability": {
+                "shipToLocationAvailability": {"quantity": int(template.quantity or 1)},
+            },
+            "condition": _condition_enum_for_id(condition_id),
+            "product": {
+                "title": (template.title or template.name)[:80],  # eBay caps at 80
+                "description": description_html,
+                "aspects": aspects,
+                "imageUrls": list(photo_urls or []),
+            },
+        }
+        # MPN is also a product-level field, not just an aspect
+        if getattr(template, "model", None):
+            inventory_payload["product"]["mpn"] = str(template.model)
+        if template.brand:
+            inventory_payload["product"]["brand"] = template.brand
+
+        async with httpx.AsyncClient(timeout=self.TIMEOUT_SECONDS) as client:
+            token = await self._get_user_token(client)
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Content-Language": "en-US",  # required for inventory_item endpoint
+                "Accept": "application/json",
+                "User-Agent": self.USER_AGENT,
+            }
+
+            inv_response = await client.put(
+                f"{self.BASE_URL}/sell/inventory/v1/inventory_item/{sku}",
+                headers=headers,
+                json=inventory_payload,
+            )
+            if inv_response.status_code not in (200, 201, 204):
+                _raise_ebay_error(self.platform, "inventory item upsert", inv_response)
+
+            # ---- Step 2: POST offer (unpublished) ----
+            offer_payload: dict[str, Any] = {
+                "sku": sku,
+                "marketplaceId": EBAY_MARKETPLACE_ID,
+                "format": "FIXED_PRICE",
+                "availableQuantity": int(template.quantity or 1),
+                "categoryId": str(category_id),
+                "listingDescription": description_html,
+                "pricingSummary": {
+                    "price": {"currency": "USD", "value": price_value},
+                },
+            }
+
+            # Business policies + location. eBay rejects the offer if any
+            # of these are missing.
+            policies: dict[str, str] = {}
+            if fulfillment_policy_id:
+                policies["fulfillmentPolicyId"] = fulfillment_policy_id
+            if payment_policy_id:
+                policies["paymentPolicyId"] = payment_policy_id
+            if return_policy_id:
+                policies["returnPolicyId"] = return_policy_id
+            if policies:
+                offer_payload["listingPolicies"] = policies
+            if merchant_location_key:
+                offer_payload["merchantLocationKey"] = merchant_location_key
+
+            offer_response = await client.post(
+                f"{self.BASE_URL}/sell/inventory/v1/offer",
+                headers=headers,
+                json=offer_payload,
+            )
+            if offer_response.status_code not in (200, 201):
+                _raise_ebay_error(self.platform, "offer creation", offer_response)
+
+        offer_data = offer_response.json()
+        offer_id = offer_data.get("offerId")
+
+        return {
+            "sku": sku,
+            "offer_id": offer_id,
+            # eBay drafts live in Seller Hub's drafts section - no
+            # per-offer URL for unpublished items, so we link there.
+            "url": "https://www.ebay.com/sh/lst/drafts",
+            "raw_inventory": {"status": inv_response.status_code},
+            "raw_offer": offer_data,
+        }
+
+    # ------------------------------------------------------------------
+    # PlatformConnector abstract methods (for the cross-post pipeline)
     # ------------------------------------------------------------------
 
     async def post(self, template: Template, price_cents: int, quantity: int) -> PostOutcome:
+        # Cross-post pipeline override: mutate locally, call create_draft.
+        # Photos and policies must be wired by the API layer (mirror of the
+        # Reverb pattern in post_template_to_reverb).
         raise PostingError(
             self.platform,
-            "eBay listing creation not yet implemented (needs Inventory API + user OAuth).",
+            "eBay direct cross-post not implemented yet - use the per-template Post eBay Draft button.",
         )
 
     async def update_inventory(self, external_listing_id: str, new_quantity: int) -> bool:
@@ -576,6 +867,68 @@ class EbayConnector(PlatformConnector):
 # ----------------------------------------------------------------------
 # Helpers
 # ----------------------------------------------------------------------
+
+
+def _condition_enum_for_id(condition_id: int) -> str:
+    """Translate the numeric condition ID to eBay's inventory_item enum.
+
+    The Inventory API's inventory_item endpoint wants the string form
+    (NEW, NEW_OTHER, USED, FOR_PARTS_OR_NOT_WORKING, etc.). Other
+    sell endpoints use the numeric ID. We pass both - this maps the
+    common ones; less common conditions fall back to USED.
+    """
+    return {
+        1000: "NEW",
+        1500: "NEW_OTHER",
+        1750: "NEW_WITH_DEFECTS",
+        2000: "MANUFACTURER_REFURBISHED",
+        2500: "SELLER_REFURBISHED",
+        3000: "USED_EXCELLENT",
+        4000: "USED_VERY_GOOD",
+        5000: "USED_GOOD",
+        6000: "USED_ACCEPTABLE",
+        7000: "FOR_PARTS_OR_NOT_WORKING",
+    }.get(condition_id, "USED_EXCELLENT")
+
+
+def _raise_ebay_error(platform, step: str, response: httpx.Response) -> None:
+    """Translate an eBay error response into a PostingError with a useful message.
+
+    eBay's error JSON shape:
+        {"errors": [{"errorId": N, "message": "...", "longMessage": "...", "parameters": [...]}]}
+
+    We pull the first error's message into the exception text. Additional
+    errors get appended in parentheses so the user sees a complete picture
+    without us needing a structured renderer.
+    """
+    try:
+        data = response.json()
+    except Exception:
+        raise PostingError(
+            Platform.EBAY,
+            f"eBay {step} returned HTTP {response.status_code}: {response.text[:300]}",
+        )
+
+    errors = data.get("errors") or []
+    if not errors:
+        raise PostingError(
+            Platform.EBAY,
+            f"eBay {step} returned HTTP {response.status_code} with no error detail",
+        )
+
+    primary = errors[0]
+    msg = primary.get("longMessage") or primary.get("message") or "unknown"
+    if len(errors) > 1:
+        extras = ", ".join(
+            (e.get("message") or "?")[:80] for e in errors[1:4]
+        )
+        msg = f"{msg} (additional: {extras})"
+
+    raise PostingError(
+        Platform.EBAY,
+        f"eBay {step} failed: {msg}",
+        is_auth_error=(primary.get("errorId") in (1001, 1002, 1003, 1100)),
+    )
 
 
 def _flatten_tree(node: dict[str, Any], breadcrumb: list[str], out: list[dict[str, Any]]) -> None:

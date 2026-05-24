@@ -442,6 +442,15 @@
         reverbDraftBtn.addEventListener("click", postReverbDraft);
         left.appendChild(reverbDraftBtn);
 
+        // Test action: create a draft on eBay (creates an unpublished offer)
+        const ebayDraftBtn = LS.el("button", "btn-ghost");
+        ebayDraftBtn.id = "btn-ebay-draft";
+        ebayDraftBtn.textContent = "Post eBay Draft";
+        ebayDraftBtn.title = "Create an unpublished offer on eBay (review in Seller Hub → Listings → Drafts before publishing)";
+        ebayDraftBtn.style.marginLeft = "8px";
+        ebayDraftBtn.addEventListener("click", postEbayDraft);
+        left.appendChild(ebayDraftBtn);
+
         bar.appendChild(left);
 
         const right = LS.el("div", "right");
@@ -592,6 +601,213 @@
             btn.disabled = false;
             btn.textContent = "Post Reverb Draft";
         }
+    }
+
+    async function postEbayDraft() {
+        if (!LS.state.currentTemplate) return;
+
+        // Save edits first so what gets posted matches the form
+        if (LS.state.formDirty) {
+            await saveTemplate();
+        }
+
+        const btn = LS.$("btn-ebay-draft");
+        btn.disabled = true;
+        btn.textContent = "Creating draft…";
+
+        try {
+            // Empty body lets the backend auto-pick the first business policy
+            // of each kind + the first merchant location. If the user has
+            // multiple, we'll add a picker in Settings later.
+            const result = await LS.api(
+                "POST",
+                `/api/templates/${LS.state.currentTemplate.id}/post-to-ebay`,
+                {},
+            );
+            showEbayDraftResult(result);
+        } catch (err) {
+            // eBay's errors can be lengthy - show in a modal rather than alert
+            // so the user can read the full message and screenshot if needed.
+            showEbayDraftError(err.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = "Post eBay Draft";
+        }
+    }
+
+    function showEbayDraftResult(result) {
+        const backdrop = LS.el("div", "modal-backdrop");
+        const card = LS.el("div", "modal-card");
+        card.style.maxWidth = "560px";
+
+        const h2 = LS.el("h2");
+        h2.innerHTML = `eBay draft <em>created</em>`;
+        card.appendChild(h2);
+
+        const info = LS.el("div", "modal-sub");
+        info.innerHTML = `SKU: <span style="font-family: var(--font-mono); color: var(--gold-bright);">${LS.escapeHTML(result.sku)}</span>`
+                       + (result.offer_id ? ` · Offer ID: <span style="font-family: var(--font-mono); color: var(--gold-bright);">${LS.escapeHTML(result.offer_id)}</span>` : "");
+        card.appendChild(info);
+
+        const photoResults = result.photo_results || {};
+        const uploaded = photoResults.uploaded || 0;
+        const failed = photoResults.failed || 0;
+        const hostName = photoResults.host_display_name || "image host";
+
+        // Photo summary
+        const next = LS.el("div");
+        Object.assign(next.style, {
+            marginTop: "16px",
+            padding: "14px 16px",
+            background: "var(--bg-input)",
+            border: "1px solid " + (failed === 0 && uploaded > 0 ? "var(--moss-bright)" : "var(--gold)"),
+            borderRadius: "4px",
+            fontSize: "13px",
+            lineHeight: "1.5",
+        });
+        if (uploaded > 0 && failed === 0) {
+            next.innerHTML = `
+                <div style="font-weight: 600; color: var(--moss-bright); margin-bottom: 6px;">
+                    ✓ ${uploaded} photo${uploaded === 1 ? "" : "s"} uploaded via ${hostName}
+                </div>
+                <div style="color: var(--ink-2); margin-bottom: 10px;">
+                    The draft is in your eBay Seller Hub. Review it under <strong>Listings → Drafts</strong>, then publish when ready.
+                </div>
+            `;
+        } else {
+            next.innerHTML = `
+                <div style="font-weight: 600; color: var(--gold-bright); margin-bottom: 6px;">
+                    Draft created · photos: ${uploaded} ok, ${failed} failed
+                </div>
+                <div style="color: var(--ink-2); margin-bottom: 10px;">
+                    Review the draft on eBay's Seller Hub. Photo errors (if any) are listed below — you can drag photos into the eBay UI as a fallback.
+                </div>
+            `;
+            if (photoResults.errors && photoResults.errors.length > 0) {
+                const details = LS.el("details");
+                details.style.marginTop = "8px";
+                const sum = LS.el("summary");
+                sum.style.cursor = "pointer";
+                sum.style.fontSize = "12px";
+                sum.style.color = "var(--ink-3)";
+                sum.textContent = `Show ${photoResults.errors.length} photo error(s)`;
+                details.appendChild(sum);
+                const list = LS.el("ul");
+                list.style.marginTop = "8px";
+                list.style.paddingLeft = "20px";
+                list.style.fontSize = "11px";
+                list.style.color = "var(--rust-bright)";
+                list.style.fontFamily = "var(--font-mono)";
+                for (const e of photoResults.errors) {
+                    const li = LS.el("li");
+                    li.textContent = e;
+                    list.appendChild(li);
+                }
+                details.appendChild(list);
+                next.appendChild(details);
+            }
+        }
+
+        const openBtn = LS.el("button");
+        openBtn.textContent = "→ Open eBay Seller Hub";
+        Object.assign(openBtn.style, {
+            display: "inline-block",
+            padding: "8px 14px",
+            background: "var(--gold-bright)",
+            color: "var(--bg-deep)",
+            border: "none",
+            borderRadius: "4px",
+            fontWeight: "600",
+            fontSize: "13px",
+            cursor: "pointer",
+        });
+        openBtn.addEventListener("click", () => {
+            window.open(result.url || "https://www.ebay.com/sh/lst/drafts", "_blank");
+        });
+        next.appendChild(openBtn);
+        card.appendChild(next);
+
+        const note = LS.el("div");
+        note.style.marginTop = "16px";
+        note.style.fontSize = "12px";
+        note.style.color = "var(--ink-3)";
+        note.style.lineHeight = "1.5";
+        note.textContent = "Draft offers don't charge listing fees and don't appear in search. To delete a test draft, find it in Seller Hub → Listings → Drafts.";
+        card.appendChild(note);
+
+        const footer = LS.el("div", "modal-footer-bar");
+        const closeBtn = LS.el("button", "btn-update-now", "Done");
+        closeBtn.addEventListener("click", () => backdrop.remove());
+        footer.appendChild(closeBtn);
+        card.appendChild(footer);
+
+        backdrop.appendChild(card);
+        backdrop.addEventListener("click", e => {
+            if (e.target === backdrop) backdrop.remove();
+        });
+        LS.attachModalCloseButton(card, backdrop);
+        document.body.appendChild(backdrop);
+    }
+
+    function showEbayDraftError(message) {
+        const backdrop = LS.el("div", "modal-backdrop");
+        const card = LS.el("div", "modal-card");
+        card.style.maxWidth = "600px";
+
+        const h2 = LS.el("h2");
+        h2.innerHTML = `eBay draft <em>failed</em>`;
+        card.appendChild(h2);
+
+        card.appendChild(LS.el("div", "modal-sub",
+            "eBay rejected the draft. The full error message is below — common fixes are listed underneath."));
+
+        // The error message itself
+        const errBox = LS.el("div");
+        Object.assign(errBox.style, {
+            marginTop: "12px",
+            padding: "12px 14px",
+            background: "var(--bg-input)",
+            border: "1px solid var(--rust)",
+            borderRadius: "4px",
+            fontFamily: "var(--font-mono)",
+            fontSize: "12px",
+            color: "var(--ink)",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+        });
+        errBox.textContent = message;
+        card.appendChild(errBox);
+
+        // Common-fixes cheat sheet
+        const fixes = LS.el("div");
+        fixes.style.marginTop = "16px";
+        fixes.style.fontSize = "12px";
+        fixes.style.lineHeight = "1.6";
+        fixes.style.color = "var(--ink-2)";
+        fixes.innerHTML = `
+            <div style="color: var(--gold-bright); font-weight: 600; margin-bottom: 6px;">Common fixes</div>
+            <ul style="padding-left: 20px; margin: 0;">
+                <li><strong>"No fulfillment/payment/return policy"</strong> → Set up business policies in eBay Seller Hub → Account → Business Policies (one-time).</li>
+                <li><strong>"No merchant location"</strong> → Add an inventory location in Seller Hub → Account → Locations.</li>
+                <li><strong>"Aspect required: Brand"</strong> (or MPN, Type, etc.) → Fill that field on the template and try again.</li>
+                <li><strong>"Item Specifics missing"</strong> → eBay requires more aspects for this category. Tell Justin which ones and he'll add them per-category.</li>
+                <li><strong>"Category requires..."</strong> → The eBay category needs a specific condition or format. Switch to a different leaf in the Category editor.</li>
+            </ul>
+        `;
+        card.appendChild(fixes);
+
+        const footer = LS.el("div", "modal-footer-bar");
+        const closeBtn = LS.el("button", "btn-update-now", "Close");
+        closeBtn.addEventListener("click", () => backdrop.remove());
+        footer.appendChild(closeBtn);
+        card.appendChild(footer);
+
+        backdrop.appendChild(card);
+        backdrop.addEventListener("click", e => {
+            if (e.target === backdrop) backdrop.remove();
+        });
+        LS.attachModalCloseButton(card, backdrop);
+        document.body.appendChild(backdrop);
     }
 
     function showReverbDraftResult(result) {
