@@ -61,3 +61,8 @@ htmlcov/
 
 # Generated preview images (regenerable via scripts/generate_icon.py)
 scripts/icon_preview.png
+
+# Debug screenshots from troubleshooting sessions
+scripts/screen_*.png
+scripts/window_*.png
+scripts/listing_studio_window.png
