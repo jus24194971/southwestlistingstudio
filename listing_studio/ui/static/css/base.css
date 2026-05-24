@@ -16,9 +16,49 @@ body {
 /* Accessibility: font scaling applied as a CSS zoom on the body. Chromium's
    `zoom` is the cleanest way to scale every nested px-value at once without
    refactoring every stylesheet. Set via a body class from main.js based on
-   the user's font_scale preference. */
+   the user's font_scale preference.
+
+   Layout impact: when zoom is active, content gets larger but body still
+   constrains itself to 100vh with overflow:hidden. The rules below relax
+   that constraint so content can scroll, AND pin the toolbar sticky so
+   menu buttons are always reachable even when the page is scrolled. */
 body.font-scale-large   { zoom: 1.20; }
 body.font-scale-xlarge  { zoom: 1.40; }
+
+body.font-scale-large,
+body.font-scale-xlarge {
+    /* let body grow to accommodate zoomed content */
+    overflow-y: auto;
+    height: auto;
+    min-height: 100%;
+}
+
+body.font-scale-large .chassis,
+body.font-scale-xlarge .chassis {
+    /* chassis is normally pinned at 100vh via grid; when zoomed, the
+       grid rows need to grow with their content instead of squeezing */
+    height: auto;
+    min-height: 100vh;
+    grid-template-rows: auto 1fr auto;
+}
+
+body.font-scale-large .toolbar,
+body.font-scale-xlarge .toolbar {
+    /* keep the toolbar (and its Help / History / Settings buttons)
+       visible while the user scrolls through zoomed content */
+    position: sticky;
+    top: 0;
+    z-index: 50;
+}
+
+body.font-scale-large .statusbar,
+body.font-scale-xlarge .statusbar {
+    /* statusbar can scroll out of view naturally; without this it'd
+       try to stick to the bottom of an over-tall chassis and look weird */
+    position: sticky;
+    bottom: 0;
+    z-index: 50;
+}
 
 /* Accessibility: high-contrast palette. Overrides the brand tokens with
    versions that have stronger foreground/background contrast for users
