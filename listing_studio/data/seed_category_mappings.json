@@ -1,0 +1,168 @@
+{
+  "_README": [
+    "Shipped seed mappings between Reverb category UUIDs and eBay category IDs.",
+    "These pre-populate the category_mappings table on first run via the",
+    "suggestion engine's load_shipped_mappings(). Once loaded, they coexist",
+    "with learned mappings (recorded from Dad's actual Category saves).",
+    "",
+    "All eBay category_id values below are TODO placeholders. Tomorrow once",
+    "we have eBay credentials and live taxonomy, replace 'ebay_id': null with",
+    "the verified leaf category IDs (visible via Settings -> eBay taxonomy",
+    "search). Reverb UUIDs should already be populated from this app's cached",
+    "taxonomy - if a Reverb UUID below is null, the Reverb category lookup",
+    "couldn't find the leaf and we'll resolve it tomorrow too.",
+    "",
+    "Schema for each entry:",
+    "  - reverb_uuid: Reverb category leaf UUID, or null if unresolved",
+    "  - reverb_full_name: Reverb's breadcrumb path",
+    "  - ebay_id: eBay numeric category_id (leaf), or null until verified",
+    "  - ebay_full_name: eBay's breadcrumb path (verified tomorrow)",
+    "  - notes: free-form for our reference"
+  ],
+  "mappings": [
+    {
+      "label": "Guitar Tuners (Tuning Machines)",
+      "reverb_uuid": null,
+      "reverb_full_name": "Parts > Guitar Parts > Tuning Heads",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Tuning Pegs",
+      "notes": "Dad's primary product category. Reverb calls them 'Tuning Heads'; eBay calls them 'Tuning Pegs'."
+    },
+    {
+      "label": "Guitar Pickups",
+      "reverb_uuid": null,
+      "reverb_full_name": "Parts > Guitar Parts > Pickups",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Pickups",
+      "notes": "May need separate entries for Acoustic vs Electric vs Bass pickups depending on Dad's split."
+    },
+    {
+      "label": "Guitar Bridges",
+      "reverb_uuid": null,
+      "reverb_full_name": "Parts > Guitar Parts > Bridges",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Bridges & Saddles",
+      "notes": "eBay combines bridges with saddles in one leaf."
+    },
+    {
+      "label": "Guitar Necks",
+      "reverb_uuid": null,
+      "reverb_full_name": "Parts > Guitar Parts > Necks",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Necks",
+      "notes": ""
+    },
+    {
+      "label": "Guitar Bodies",
+      "reverb_uuid": null,
+      "reverb_full_name": "Parts > Guitar Parts > Bodies",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Bodies",
+      "notes": ""
+    },
+    {
+      "label": "Guitar Strings",
+      "reverb_uuid": null,
+      "reverb_full_name": "Accessories > Strings",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Strings",
+      "notes": ""
+    },
+    {
+      "label": "Guitar Knobs",
+      "reverb_uuid": null,
+      "reverb_full_name": "Parts > Guitar Parts > Knobs",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Knobs, Jacks, Switches",
+      "notes": "eBay's leaf is broader (knobs + jacks + switches in one)."
+    },
+    {
+      "label": "Guitar Pickguards",
+      "reverb_uuid": null,
+      "reverb_full_name": "Parts > Guitar Parts > Pickguards",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Pickguards",
+      "notes": ""
+    },
+    {
+      "label": "Guitar Cases & Gig Bags",
+      "reverb_uuid": null,
+      "reverb_full_name": "Accessories > Cases & Gig Bags",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Cases & Gig Bags",
+      "notes": ""
+    },
+    {
+      "label": "Guitar Straps",
+      "reverb_uuid": null,
+      "reverb_full_name": "Accessories > Straps",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Straps",
+      "notes": ""
+    },
+    {
+      "label": "Acoustic Guitars",
+      "reverb_uuid": null,
+      "reverb_full_name": "Acoustic Guitars",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Acoustic Guitars",
+      "notes": "Whole-instrument category, not a part. eBay requires more specific sub-listing fields."
+    },
+    {
+      "label": "Electric Guitars",
+      "reverb_uuid": null,
+      "reverb_full_name": "Electric Guitars",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Electric Guitars",
+      "notes": ""
+    },
+    {
+      "label": "Bass Guitars",
+      "reverb_uuid": null,
+      "reverb_full_name": "Bass Guitars",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Bass Guitars",
+      "notes": ""
+    },
+    {
+      "label": "Effects Pedals",
+      "reverb_uuid": null,
+      "reverb_full_name": "Effects and Pedals",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Effects Pedals",
+      "notes": "Reverb has many sub-categories under Effects; map per pedal type later."
+    },
+    {
+      "label": "Amplifier Tubes",
+      "reverb_uuid": null,
+      "reverb_full_name": "Parts > Amp Parts > Tubes",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Vintage Musical Instruments > Vintage Tubes",
+      "notes": "eBay's tube category is in their Vintage section, which may not be the right fit. Verify tomorrow."
+    },
+    {
+      "label": "Picks",
+      "reverb_uuid": null,
+      "reverb_full_name": "Accessories > Picks",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Picks",
+      "notes": ""
+    },
+    {
+      "label": "Tuners (Electronic)",
+      "reverb_uuid": null,
+      "reverb_full_name": "Accessories > Tuners",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Tuners",
+      "notes": "Different from Tuning Machines - these are electronic tuners."
+    },
+    {
+      "label": "Capos",
+      "reverb_uuid": null,
+      "reverb_full_name": "Accessories > Capos",
+      "ebay_id": null,
+      "ebay_full_name": "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Capos",
+      "notes": ""
+    }
+  ]
+}
