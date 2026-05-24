@@ -842,6 +842,12 @@ async def create_category(payload: CategoryCreate) -> CategoryOut:
             reverb_category_full_name=payload.reverb_category_full_name,
             reverb_subcategory_uuids=payload.reverb_subcategory_uuids,
             reverb_subcategory_names=payload.reverb_subcategory_names,
+            ebay_category_id=payload.ebay_category_id,
+            ebay_category_name=payload.ebay_category_name,
+            ebay_category_path=payload.ebay_category_path,
+            ebay_leaf=payload.ebay_leaf,
+            squarespace_store_page_id=payload.squarespace_store_page_id,
+            squarespace_store_page_name=payload.squarespace_store_page_name,
             platform_config={},
             default_condition=payload.default_condition,
             default_weight_oz=payload.default_weight_oz,
@@ -849,6 +855,13 @@ async def create_category(payload: CategoryCreate) -> CategoryOut:
         )
         session.add(cat)
         session.flush()
+
+        # Learn cross-platform mappings + bump recent-used for any platforms
+        # this category was created against. Safe to call regardless of which
+        # platforms have data populated.
+        from listing_studio.core import category_suggest
+        category_suggest.record_category_save(session, cat)
+
         result = CategoryOut.model_validate(cat)
         result.template_count = 0
         return result
@@ -884,6 +897,12 @@ async def update_category(category_id: int, payload: CategoryUpdate) -> Category
             setattr(cat, key, value)
 
         session.flush()
+
+        # Learn cross-platform mappings + bump recent-used after any update
+        # that may have changed the platform fields. record_category_save
+        # is idempotent on existing rows, so no harm calling it every time.
+        from listing_studio.core import category_suggest
+        category_suggest.record_category_save(session, cat)
 
         # Count templates
         count = session.execute(
@@ -948,6 +967,166 @@ async def search_reverb_taxonomy(q: str = "", limit: int = 30) -> list[dict]:
 
     matches = await connector.search_taxonomy(q, limit=limit)
     return matches
+
+
+@app.get("/api/platforms/ebay/taxonomy/search")
+async def search_ebay_taxonomy(q: str = "", limit: int = 30) -> list[dict]:
+    """Search eBay's category taxonomy.
+
+    Returns matches with category_id (int), name, full_name, is_leaf (bool).
+    eBay only allows listings on LEAF categories - the UI should warn the
+    user when picking a non-leaf result.
+
+    Empty query returns the first ``limit`` leaves (more useful than mid-tree
+    nodes when populating a category picker).
+    """
+    from listing_studio.platforms.ebay import EbayConnector
+
+    connector = EbayConnector()
+    if not await connector.is_connected():
+        raise HTTPException(
+            400,
+            "eBay not connected. Connect it in Settings before searching the taxonomy.",
+        )
+
+    matches = await connector.search_taxonomy(q, limit=limit)
+    return matches
+
+
+@app.get("/api/platforms/squarespace/store-pages")
+async def get_squarespace_store_pages() -> list[dict]:
+    """Return the Squarespace store pages discoverable from existing products.
+
+    Squarespace's API doesn't expose a direct "list commerce pages" endpoint,
+    so this scans products and returns the unique storePageIds observed.
+    Empty list if not connected or no products exist yet (Dad can fall back
+    to entering a page ID manually in that case).
+    """
+    from listing_studio.platforms.squarespace import SquarespaceConnector
+
+    connector = SquarespaceConnector()
+    if not await connector.is_connected():
+        return []
+
+    return await connector.fetch_store_pages()
+
+
+# Cross-platform category suggestions + recent-used
+
+
+@app.get("/api/categories/suggestions")
+async def get_category_suggestions(
+    from_platform: str,
+    from_id: str,
+    to_platform: str,
+) -> list[dict]:
+    """Suggest target-platform categories matching a source category.
+
+    Two-layer logic (the engine handles layer 1, this endpoint handles
+    layer 2 because it requires an async call to the target connector):
+
+      1. **Direct mappings** in category_mappings (shipped + learned).
+      2. **Fuzzy name match** against the target platform's cached taxonomy,
+         using the source category's display name as the query.
+
+    Query params:
+      from_platform: "reverb" | "ebay" | "squarespace"
+      from_id:       The source platform's external_id (UUID for Reverb, etc.)
+      to_platform:   The platform we want suggestions for.
+
+    Returns a list of CategorySuggestion-shaped dicts ordered by confidence.
+    """
+    from listing_studio.core import category_suggest
+    from listing_studio.core.models import CategoryUsage, Platform
+
+    try:
+        src = Platform(from_platform)
+        dst = Platform(to_platform)
+    except ValueError as exc:
+        raise HTTPException(400, f"Unknown platform: {exc}") from exc
+
+    # Layer 1: direct mappings (in-DB lookup)
+    with session_scope() as session:
+        direct = category_suggest.suggest_for(
+            session,
+            from_platform=src,
+            from_external_id=from_id,
+            to_platform=dst,
+        )
+        if direct:
+            return direct
+
+        # Pull the source category's display name to use as a fuzzy hint
+        usage = session.execute(
+            select(CategoryUsage).where(
+                CategoryUsage.platform == src,
+                CategoryUsage.external_id == from_id,
+            )
+        ).scalar_one_or_none()
+        hint = usage.display_name if usage else None
+
+    # Layer 2: fuzzy match against the target platform's taxonomy.
+    # Done outside the session because the connector calls are async/network.
+    if not hint:
+        return []
+
+    if dst == Platform.REVERB:
+        from listing_studio.platforms.reverb import ReverbConnector
+        connector_r = ReverbConnector()
+        if not await connector_r.is_connected():
+            return []
+        matches = await connector_r.search_taxonomy(hint, limit=5)
+        return [
+            {
+                "platform": dst.value,
+                "external_id": m["uuid"],
+                "display_name": m["name"],
+                "display_path": m.get("full_name") or m["name"],
+                "confidence": 0.4,
+                "source": "fuzzy",
+            }
+            for m in matches
+        ]
+
+    if dst == Platform.EBAY:
+        from listing_studio.platforms.ebay import EbayConnector
+        connector_e = EbayConnector()
+        if not await connector_e.is_connected():
+            return []
+        matches = await connector_e.search_taxonomy(hint, limit=5)
+        return [
+            {
+                "platform": dst.value,
+                "external_id": str(m["category_id"]),
+                "display_name": m["name"],
+                "display_path": m.get("full_name") or m["name"],
+                "confidence": 0.4 if m.get("is_leaf") else 0.2,
+                "source": "fuzzy",
+            }
+            for m in matches
+        ]
+
+    # Squarespace has no enforced taxonomy to fuzzy-match against
+    return []
+
+
+@app.get("/api/categories/usage/recent")
+async def get_recent_category_usage(platform: str, limit: int = 8) -> list[dict]:
+    """Return the most recently used categories on a given platform.
+
+    Feeds the "Recent" section above search results in each platform's
+    category picker. Capped at ``limit`` rows (default 8).
+    """
+    from listing_studio.core import category_suggest
+    from listing_studio.core.models import Platform
+
+    try:
+        plat = Platform(platform)
+    except ValueError as exc:
+        raise HTTPException(400, f"Unknown platform: {platform}") from exc
+
+    with session_scope() as session:
+        return category_suggest.get_recent(session, plat, limit=limit)
 
 
 # ---------------------------------------------------------------------------

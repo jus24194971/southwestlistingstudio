@@ -95,6 +95,79 @@ still works because `validate_path` checks the file's directory and the
 user can re-pick to refresh the allowlist if they need to add more from
 the same folder.
 
+## Cross-platform category mapping (v0.4.0+)
+
+Each marketplace has a different taxonomy model:
+
+- **Reverb** — strict UUID hierarchy (~700 categories). Fetched via
+  `ReverbConnector.search_taxonomy()`, cached in-memory.
+- **eBay** — strict numeric ID hierarchy (~24,000 categories). Listings
+  are only valid on leaves. Fetched via `EbayConnector.search_taxonomy()`
+  using the US default tree (`tree_id="0"`), cached in-memory.
+- **Squarespace** — no strict taxonomy. Products live on store pages the
+  user defined. `SquarespaceConnector.fetch_store_pages()` infers them
+  from existing products.
+
+The `Category` model carries first-class fields for all three:
+`reverb_*`, `ebay_*`, `squarespace_*`. The generic `platform_config` JSON
+remains for future platforms (Etsy) that don't yet have schema columns.
+
+### Suggestion engine (`core/category_suggest.py`)
+
+When Dad picks a category on one platform, the engine suggests the
+matching category on another. Two layers:
+
+1. **Direct mappings** (`category_mappings` table). Two sources:
+   - `source='shipped'`: loaded once at first run from
+     `data/seed_category_mappings.json` — hand-curated for Dad's known
+     inventory. Some entries start with null eBay IDs as placeholders
+     and get verified post-launch.
+   - `source='learned'`: recorded automatically every time the user
+     saves a Category with two or more platforms populated. Both
+     directions (A→B and B→A) are inserted so suggestions work either way.
+2. **Fuzzy name match** against the target platform's cached taxonomy,
+   using the source category's display name as the query. Lowest
+   confidence; only invoked if direct lookup is empty. Handled at the
+   API endpoint (it needs async access to the connector); the engine
+   itself is sync.
+
+### Recently-used tracking (`category_usage` table)
+
+Updated on every Category save: one row per (platform, external_id) with
+last_used_at and use_count. The picker UIs query
+`/api/categories/usage/recent?platform=...` and show the top 6 as pills
+above the search results.
+
+## eBay credentials (the two-tier story)
+
+eBay has two distinct token types:
+
+- **App token** (`client_credentials` grant from the developer app's
+  `client_id` + `client_secret`). Read-only; works for the taxonomy API
+  and other public endpoints. Lives in memory only, refreshed every ~2hr.
+  No user consent required. The category picker uses this exclusively.
+- **User token** (`authorization_code` grant via OAuth redirect). Tied to
+  Dad's actual eBay seller account; required for inventory/listing
+  endpoints. Stored in the keyring alongside the app credentials. Not
+  yet implemented — that lands with the eBay posting flow.
+
+The keyring blob shape:
+```
+{
+    "client_id":  "...",      # App ID
+    "client_secret": "...",   # Cert ID (shown once at creation)
+    "dev_id":     "...",      # optional, legacy APIs
+    "user_access_token":  "...",  # populated by future OAuth flow
+    "user_refresh_token": "...",
+    "user_token_expires_at": "ISO timestamp",
+    "account_label": "<eBay user id>"
+}
+```
+
+`EbayConnector.is_connected()` returns true once `client_id` +
+`client_secret` are present — the minimum-viable state for taxonomy
+reads. Posting will additionally require the user tokens.
+
 ## Drafts only, for now
 
 Every posting flow currently creates **drafts**, not live listings. Dad
