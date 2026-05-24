@@ -115,6 +115,7 @@
 .pc-logo.etsy { background: #F1641E; }
 .pc-logo.squarespace { background: #000; color: white; font-weight: 700; font-size: 14px; }
 .pc-logo.facebook { background: #1877F2; }
+.pc-logo.imgbb { background: #EB1924; color: white; font-weight: 700; font-size: 13px; }
 
 .pc-info { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 

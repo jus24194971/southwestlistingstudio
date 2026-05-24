@@ -386,6 +386,97 @@ async def test_platform_connection(platform_value: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Photo host (image hosting for Reverb)
+# ---------------------------------------------------------------------------
+#
+# Reverb's API doesn't accept binary photo uploads, so we host them on an
+# external service (currently ImgBB) and pass URLs to Reverb. These endpoints
+# manage the host's stored API key, mirroring the platform-connection pattern
+# above but using the "service" namespace in the keyring rather than the
+# Platform enum.
+
+
+@app.get("/api/settings/photo-host")
+async def get_photo_host_status() -> dict:
+    """Return whether a photo host is configured and which one.
+
+    Response shape: {"connected": bool, "service_name": str | null,
+                     "display_name": str | null}
+    """
+    from listing_studio.core.photo_host import get_status
+    return get_status()
+
+
+@app.post("/api/settings/photo-host/imgbb/connect")
+async def connect_imgbb(payload: dict) -> dict:
+    """Validate an ImgBB API key and save it on success.
+
+    Body: ``{"api_key": "<the key>"}``
+
+    Tests the key by performing a tiny upload; saves it in the OS keyring
+    only if the test succeeds. Pattern matches the platform connect flow.
+    """
+    from listing_studio.core.credentials import (
+        clear_service_credentials,
+        store_service_credentials,
+    )
+    from listing_studio.core.photo_host import IMGBB_SERVICE_NAME, ImgBBHost
+
+    api_key = payload.get("api_key", "").strip()
+    if not api_key:
+        raise HTTPException(400, "Missing api_key")
+
+    # Save first so the ImgBBHost factory can find it during the test.
+    # Cleared if the test fails so we never leave a bad key sitting around.
+    try:
+        store_service_credentials(IMGBB_SERVICE_NAME, {"api_key": api_key})
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    host = ImgBBHost(api_key=api_key)
+    ok, label_or_error = await host.test_connection()
+
+    if not ok:
+        clear_service_credentials(IMGBB_SERVICE_NAME)
+        raise HTTPException(400, f"ImgBB rejected the key: {label_or_error}")
+
+    store_service_credentials(IMGBB_SERVICE_NAME, {
+        "api_key": api_key,
+        "account_label": label_or_error,
+    })
+    return {"is_connected": True, "account_label": label_or_error}
+
+
+@app.post("/api/settings/photo-host/disconnect", status_code=204)
+async def disconnect_photo_host() -> None:
+    """Remove the configured photo host's credentials."""
+    from listing_studio.core.credentials import clear_service_credentials
+    from listing_studio.core.photo_host import IMGBB_SERVICE_NAME
+    # Only one host today, so we always clear ImgBB. When we add Cloudinary
+    # etc, this becomes "clear whichever is configured".
+    clear_service_credentials(IMGBB_SERVICE_NAME)
+
+
+@app.post("/api/settings/photo-host/test")
+async def test_photo_host() -> dict:
+    """Verify the stored photo-host credentials still work.
+
+    Returns {"ok": bool, "account_label" | "error": str}, matching the
+    platform test endpoint's shape so the UI can use the same handler.
+    """
+    from listing_studio.core.photo_host import get_configured_host
+
+    host = get_configured_host()
+    if host is None:
+        return {"ok": False, "error": "No photo host configured"}
+
+    ok, message = await host.test_connection()
+    if ok:
+        return {"ok": True, "account_label": message}
+    return {"ok": False, "error": message}
+
+
+# ---------------------------------------------------------------------------
 # Auto-update endpoints
 # ---------------------------------------------------------------------------
 
@@ -959,10 +1050,19 @@ async def get_reverb_shipping_profiles() -> list[dict]:
 async def post_template_to_reverb(template_id: int, payload: dict | None = None) -> dict:
     """Create a draft Reverb listing from a template.
 
+    Photo handling:
+        Reverb wants public URLs, not binary uploads. If a photo host is
+        configured (see /api/settings/photo-host), we normalize each NAS
+        photo (EXIF-rotate, downscale, JPEG re-encode), upload it there, and
+        pass the resulting URLs to Reverb. If no host is configured, the
+        draft is created without photos and the UI prompts Dad to drag
+        them into the Reverb web UI manually.
+
     Body (all optional):
         {
             "shipping_profile_id": "1234",
-            "upload_photos": true     // default: true; set false to skip photos
+            "skip_photos": false   // force the no-photos manual-drag path
+                                   // even if a host is configured
         }
 
     Returns:
@@ -970,17 +1070,27 @@ async def post_template_to_reverb(template_id: int, payload: dict | None = None)
             "listing_id": "...",
             "state": "draft",
             "url": "https://reverb.com/...",
-            "photo_results": {"uploaded": 3, "failed": 1, "errors": [...]}
+            "photo_results": {
+                "uploaded": 3,
+                "failed": 1,
+                "errors": [...],
+                "host_configured": true,    // whether auto-upload was attempted
+                "host_display_name": "ImgBB" | null,
+            }
         }
     """
     from listing_studio.core.models import Template, Preference
-    from listing_studio.platforms.reverb import ReverbConnector
+    from listing_studio.core.photo_host import get_configured_host
+    from listing_studio.core.photo_processor import (
+        NormalizeError,
+        normalize_for_upload,
+    )
     from listing_studio.platforms.base import PostingError
-    from pathlib import Path as PathLib
+    from listing_studio.platforms.reverb import ReverbConnector
 
     payload = payload or {}
     shipping_profile_id = payload.get("shipping_profile_id")
-    upload_photos = payload.get("upload_photos", True)
+    skip_photos = bool(payload.get("skip_photos", False))
 
     with session_scope() as session:
         template = session.get(Template, template_id)
@@ -1046,9 +1156,57 @@ async def post_template_to_reverb(template_id: int, payload: dict | None = None)
     for k, v in template_copy_data.items():
         setattr(t, k, v)
 
+    # Photo pre-upload: normalize each NAS photo and ship it to the configured
+    # image host. We do this BEFORE create_draft so we can pass the URLs into
+    # the create payload (Reverb's API has no working way to attach photos
+    # after-the-fact via binary upload; it only accepts URLs).
+    photo_results: dict = {
+        "uploaded": 0,
+        "failed": 0,
+        "errors": [],
+        "host_configured": False,
+        "host_display_name": None,
+    }
+    photo_urls: list[str] = []
+
+    host = None if skip_photos else get_configured_host()
+    if host is not None:
+        photo_results["host_configured"] = True
+        photo_results["host_display_name"] = host.display_name
+
+    if host is not None and photo_paths:
+        from pathlib import Path as PathLib
+        from listing_studio.core.photo_host import PhotoHostError
+
+        for idx, photo_path_str in enumerate(photo_paths):
+            photo_path = PathLib(photo_path_str)
+            display_name = photo_path.name
+            try:
+                normalized = normalize_for_upload(photo_path)
+                # Prefix with sort order so if Dad later compares the host's
+                # filenames they match his picker order.
+                upload_filename = f"{idx + 1:02d}_{normalized.filename}"
+                url = await host.upload(normalized.data, upload_filename)
+                photo_urls.append(url)
+                photo_results["uploaded"] += 1
+            except NormalizeError as exc:
+                photo_results["failed"] += 1
+                photo_results["errors"].append(f"{display_name}: {exc}")
+            except PhotoHostError as exc:
+                photo_results["failed"] += 1
+                photo_results["errors"].append(f"{display_name}: {exc}")
+            except Exception as exc:  # pragma: no cover - defensive
+                photo_results["failed"] += 1
+                photo_results["errors"].append(
+                    f"{display_name}: {type(exc).__name__}: {exc}"
+                )
+
     try:
         result = await connector.create_draft(
-            t, listing_tail=listing_tail, shipping_profile_id=shipping_profile_id,
+            t,
+            listing_tail=listing_tail,
+            shipping_profile_id=shipping_profile_id,
+            photo_urls=photo_urls or None,
         )
     except PostingError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -1056,25 +1214,6 @@ async def post_template_to_reverb(template_id: int, payload: dict | None = None)
     listing_id = result.get("id")
     if not listing_id:
         raise HTTPException(500, "Reverb didn't return a listing ID")
-
-    # Upload photos if requested
-    photo_results = {"uploaded": 0, "failed": 0, "errors": []}
-    if upload_photos and photo_paths:
-        for photo_path_str in photo_paths:
-            photo_path = PathLib(photo_path_str)
-            try:
-                await connector.upload_photo(str(listing_id), photo_path)
-                photo_results["uploaded"] += 1
-            except PostingError as exc:
-                photo_results["failed"] += 1
-                photo_results["errors"].append(
-                    f"{photo_path.name}: {exc}"
-                )
-            except Exception as exc:  # pragma: no cover - defensive
-                photo_results["failed"] += 1
-                photo_results["errors"].append(
-                    f"{photo_path.name}: {type(exc).__name__}: {exc}"
-                )
 
     return {
         "listing_id": str(listing_id),

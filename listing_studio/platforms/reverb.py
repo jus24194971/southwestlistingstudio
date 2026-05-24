@@ -9,17 +9,18 @@ Listing creation flow (Reverb-specific quirks):
    taxonomy on first use and cache the name→UUID mapping in memory.
 2. **Shipping profile is referenced by ID.** We fetch the user's profiles via
    ``/api/my/shipping_profiles`` and pick one (caller can override).
-3. **Photos are uploaded separately after listing creation.** The create call
-   doesn't take binary image data - it accepts URLs. We do two-step: POST
-   /listings with metadata, then POST /listings/{id}/images with multipart
-   form data for each photo.
+3. **Photos are passed as public URLs in the create payload.** Reverb does
+   NOT accept binary photo uploads - there's no working endpoint for that
+   (an older multipart attempt at /listings/{id}/images returns 405). The
+   caller is responsible for uploading bytes to an image host first
+   (see ``core/photo_host.py``) and passing the resulting URLs in via the
+   ``photo_urls`` argument to create_draft. Reverb fetches them server-side.
 4. **Drafts vs publish.** POST /listings creates a draft by default. To publish,
    the listing has to PUT /listings/{id}/publish later. For our testing today
    we keep everything as drafts so Dad can review before going live.
 
 References:
   https://www.reverb-api.com/docs/create-listings
-  https://www.reverb-api.com/docs/updating-listing-images
   https://www.reverb-api.com/docs/personal-token-scopes-1
 """
 
@@ -27,7 +28,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -341,14 +341,12 @@ class ReverbConnector(PlatformConnector):
         template: Template,
         listing_tail: str = "",
         shipping_profile_id: str | None = None,
+        photo_urls: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create a draft listing on Reverb.
 
         Returns a dict with at minimum: ``id``, ``state`` (should be 'draft'),
         ``url`` (preview link). Raises PostingError on failure.
-
-        Photos are NOT uploaded here - they're uploaded separately via
-        ``upload_photo()`` after the listing exists.
 
         Args:
             template: the Template to create from
@@ -357,6 +355,10 @@ class ReverbConnector(PlatformConnector):
             shipping_profile_id: optional ID of a shipping profile to attach.
                 If None, Reverb may reject the listing - the user has to have
                 profiles set up.
+            photo_urls: optional list of publicly-fetchable image URLs. Reverb
+                fetches each URL server-side after listing creation. Pass an
+                empty list (or None) to create a draft with no photos - Dad
+                can then drag photos into the Reverb UI manually.
         """
         token = self._get_token()
         if not token:
@@ -423,6 +425,12 @@ class ReverbConnector(PlatformConnector):
             if template.finish:
                 payload["finish"] = template.finish
 
+            # Photo URLs - Reverb fetches each one server-side. We send the
+            # raw URL strings; Reverb's docs accept both that and {url: ""}
+            # objects but the bare-string form is what their examples show.
+            if photo_urls:
+                payload["photos"] = list(photo_urls)
+
             # Shipping: prefer the template's per-listing shipping fields over
             # an explicit profile ID. If neither is set, Reverb falls back to
             # the seller's default profile (if they have one).
@@ -473,47 +481,6 @@ class ReverbConnector(PlatformConnector):
             "url": listing.get("_links", {}).get("web", {}).get("href"),
             "raw": listing,  # Caller may inspect for debugging
         }
-
-    async def upload_photo(self, listing_id: str, photo_path: Path) -> dict[str, Any]:
-        """Upload a single photo to an existing Reverb listing.
-
-        Reverb wants multipart/form-data with the binary image. Returns the
-        listing photo metadata on success.
-        """
-        token = self._get_token()
-        if not token:
-            raise PostingError(self.platform, "Not connected", is_auth_error=True)
-
-        if not photo_path.exists() or not photo_path.is_file():
-            raise PostingError(
-                self.platform, f"Photo file not found: {photo_path}",
-            )
-
-        # Use multipart upload - headers omit the Content-Type because httpx
-        # sets it automatically with the multipart boundary.
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/hal+json",
-            "Accept-Version": "3.0",
-            "User-Agent": self.USER_AGENT,
-        }
-
-        with open(photo_path, "rb") as f:
-            files = {"image": (photo_path.name, f, _guess_mime(photo_path))}
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    f"{self.BASE_URL}/listings/{listing_id}/images",
-                    headers=headers,
-                    files=files,
-                )
-
-        if response.status_code not in (200, 201):
-            raise PostingError(
-                self.platform,
-                f"Photo upload failed ({response.status_code}): {response.text[:300]}",
-            )
-
-        return response.json()
 
     # ------------------------------------------------------------------
     # PlatformConnector abstract methods (called by generic posting code)
@@ -655,15 +622,6 @@ def _build_shipping_payload(template: Any) -> dict | None:
             },
         ],
     }
-
-
-def _guess_mime(path: Path) -> str:
-    ext = path.suffix.lower()
-    return {
-        ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".png": "image/png", ".webp": "image/webp",
-        ".gif": "image/gif",
-    }.get(ext, "image/jpeg")
 
 
 def _format_errors(errors: Any) -> str:
