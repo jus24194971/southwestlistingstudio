@@ -231,6 +231,16 @@ class Template(Base):
     reverb_shipping_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     reverb_shipping_flat_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # eBay-specific shipping override. eBay's Inventory API offer payload
+    # supports `shippingCostOverrides` that override the fulfillment policy's
+    # default shipping costs on a per-listing basis. Same shape as the
+    # Reverb fields above:
+    #   "free"   - override with $0 domestic (free shipping)
+    #   "flat"   - override with the value in ebay_shipping_override_cents
+    #   None     - no override; fall back to the fulfillment policy's defaults
+    ebay_shipping_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    ebay_shipping_override_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

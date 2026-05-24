@@ -254,6 +254,47 @@
         shipHelp.textContent = "US continental shipping only. International shipping uses your Reverb default profile.";
         group.appendChild(shipHelp);
 
+        // eBay shipping override row (parallel structure to the Reverb row).
+        // Without an override, eBay uses the Fulfillment Policy's defaults;
+        // with one, this specific listing overrides the domestic shipping
+        // cost. Useful for one-offs ("free shipping on this item") or items
+        // that don't fit the default rate (heavier than usual, etc.).
+        const ebayShipType = tmpl.ebay_shipping_type || "";
+        const ebayShipRow = LS.el("div", "field-row cols-2");
+        ebayShipRow.appendChild(buildField("ebay_shipping_type", "eBay Shipping Override", "select", ebayShipType, [
+            { value: "", label: "(no override - use fulfillment policy)" },
+            { value: "free", label: "Override: free domestic" },
+            { value: "flat", label: "Override: flat domestic rate" },
+        ]));
+        const ebayFlatField = buildField(
+            "ebay_shipping_override_cents", "Override Amount", "money",
+            tmpl.ebay_shipping_override_cents || 0,
+        );
+        ebayFlatField.id = "ebay-shipping-flat-field";
+        ebayFlatField.style.visibility = ebayShipType === "flat" ? "visible" : "hidden";
+        ebayShipRow.appendChild(ebayFlatField);
+        group.appendChild(ebayShipRow);
+
+        // Same visibility toggle pattern as the Reverb one above
+        setTimeout(() => {
+            const ebayShipTypeSelect = document.querySelector('[name="ebay_shipping_type"]');
+            const ebayFlatFieldEl = document.getElementById("ebay-shipping-flat-field");
+            if (ebayShipTypeSelect && ebayFlatFieldEl) {
+                ebayShipTypeSelect.addEventListener("change", () => {
+                    ebayFlatFieldEl.style.visibility = ebayShipTypeSelect.value === "flat" ? "visible" : "hidden";
+                });
+            }
+        }, 0);
+
+        const ebayShipHelp = LS.el("div");
+        ebayShipHelp.style.fontSize = "11px";
+        ebayShipHelp.style.color = "var(--ink-3)";
+        ebayShipHelp.style.marginTop = "-8px";
+        ebayShipHelp.style.marginBottom = "8px";
+        ebayShipHelp.style.fontStyle = "italic";
+        ebayShipHelp.textContent = "Overrides the first shipping service (priority 1) in your eBay fulfillment policy. Domestic only.";
+        group.appendChild(ebayShipHelp);
+
         section.appendChild(group);
         return section;
     }
@@ -533,6 +574,9 @@
                 value = value === "" ? null : parseInt(value, 10);
             } else if (name === "reverb_shipping_type") {
                 // empty select value means "no shipping configured" - send null
+                value = value === "" ? null : value;
+            } else if (name === "ebay_shipping_type") {
+                // empty select means "no override - use fulfillment policy" - send null
                 value = value === "" ? null : value;
             }
             form[name] = value;

@@ -1391,6 +1391,8 @@ async def post_template_to_ebay(template_id: int, payload: dict | None = None) -
             base_price_cents=template.base_price_cents,
             quantity=template.quantity,
             ebay_category_id=ebay_category_id,
+            ebay_shipping_type=template.ebay_shipping_type,
+            ebay_shipping_override_cents=template.ebay_shipping_override_cents,
             category_id=template.category_id,
             category=type("C", (), {"ebay_category_id": ebay_category_id}),
         )

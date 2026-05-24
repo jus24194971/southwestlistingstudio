@@ -825,6 +825,25 @@ class EbayConnector(PlatformConnector):
             if merchant_location_key:
                 offer_payload["merchantLocationKey"] = merchant_location_key
 
+            # Per-template shipping override. The fulfillment policy sets the
+            # default; this lets a single listing override the domestic
+            # shipping cost (e.g. "free shipping on this item" or "flat $X
+            # because this one's heavier"). The override is scoped to the
+            # FIRST shipping service in the policy (priority=1).
+            ebay_ship_type = getattr(template, "ebay_shipping_type", None)
+            ebay_ship_cents = getattr(template, "ebay_shipping_override_cents", 0) or 0
+            override_value: str | None = None
+            if ebay_ship_type == "free":
+                override_value = "0.00"
+            elif ebay_ship_type == "flat" and ebay_ship_cents >= 0:
+                override_value = f"{ebay_ship_cents / 100:.2f}"
+            if override_value is not None:
+                offer_payload["shippingCostOverrides"] = [{
+                    "priority": 1,
+                    "shippingCost": {"currency": "USD", "value": override_value},
+                    "shippingServiceType": "DOMESTIC",
+                }]
+
             offer_response = await client.post(
                 f"{self.BASE_URL}/sell/inventory/v1/offer",
                 headers=headers,

@@ -159,6 +159,8 @@ def _dump_templates(session: Session) -> list[dict]:
             "shipping_cost_cents": t.shipping_cost_cents,
             "reverb_shipping_type": t.reverb_shipping_type,
             "reverb_shipping_flat_cents": t.reverb_shipping_flat_cents,
+            "ebay_shipping_type": t.ebay_shipping_type,
+            "ebay_shipping_override_cents": t.ebay_shipping_override_cents,
             "last_posted_at": t.last_posted_at.isoformat() if t.last_posted_at else None,
             "post_count": t.post_count,
             "photos": [
@@ -398,6 +400,8 @@ def import_backup(session: Session, data: bytes, *, restore_credentials: bool = 
             shipping_cost_cents=t.get("shipping_cost_cents", 0),
             reverb_shipping_type=t.get("reverb_shipping_type"),
             reverb_shipping_flat_cents=t.get("reverb_shipping_flat_cents", 0),
+            ebay_shipping_type=t.get("ebay_shipping_type"),
+            ebay_shipping_override_cents=t.get("ebay_shipping_override_cents", 0),
             post_count=t.get("post_count", 0),
         )
         if cat_ref is not None:

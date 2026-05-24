@@ -127,6 +127,8 @@ def _run_migrations(engine: Engine) -> None:
             "category_id": "INTEGER REFERENCES categories(id)",
             "reverb_shipping_type": "TEXT",
             "reverb_shipping_flat_cents": "INTEGER NOT NULL DEFAULT 0",
+            "ebay_shipping_type": "TEXT",
+            "ebay_shipping_override_cents": "INTEGER NOT NULL DEFAULT 0",
         },
         "categories": {
             "ebay_category_id": "INTEGER",
