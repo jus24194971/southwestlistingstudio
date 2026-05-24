@@ -58,3 +58,6 @@ htmlcov/
 
 # PyInstaller
 *.spec
+
+# Generated preview images (regenerable via scripts/generate_icon.py)
+scripts/icon_preview.png
