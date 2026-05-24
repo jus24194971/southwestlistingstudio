@@ -72,6 +72,29 @@ The picker uses a thumbnail cache at `%LOCALAPPDATA%\ListingStudio\thumbnail_cac
 Cache keys include `(source_path, mtime, size)` so we invalidate
 automatically when a file changes.
 
+### Local-file failover (v0.3.1+)
+
+When the NAS isn't reachable, the picker falls back to the OS native file
+dialog via `listing_studio/core/local_picker.py`. Architecture:
+
+- `local_picker.pick_local_photos()` wraps `webview.create_file_dialog()`.
+  It's blocking, so the API handler runs it via `asyncio.to_thread`.
+- `nas._extra_allowed_dirs` is an in-memory set of directories whose
+  contents are allowed through `validate_path()`. Each successful
+  `register_local_file(path)` call (from `/api/photos/pick-local`) adds
+  the file's parent directory.
+- Once registered, locally-picked photos are indistinguishable from NAS
+  photos to the rest of the app — same `TemplatePhoto.source_path`,
+  same thumbnail endpoint, same photo-host upload pipeline.
+
+Security note: the allowlist is *write-only by the local picker endpoint*.
+A client can't manually whitelist `C:\Windows\` by crafting a request —
+the file path has to come back from the OS dialog. The allowlist clears
+on restart, which is fine: re-attaching previously-saved local photos
+still works because `validate_path` checks the file's directory and the
+user can re-pick to refresh the allowlist if they need to add more from
+the same folder.
+
 ## Drafts only, for now
 
 Every posting flow currently creates **drafts**, not live listings. Dad

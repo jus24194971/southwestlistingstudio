@@ -1,5 +1,5 @@
 """Listing Studio - cross-platform marketplace listing tool for Southwest Acoustics."""
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 __app_name__ = "Listing Studio"
 __brand_name__ = "Southwest Acoustics"

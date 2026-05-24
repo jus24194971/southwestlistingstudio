@@ -99,12 +99,57 @@ class PathOutsideRoots(ValueError):
     """Raised when a requested path isn't under any configured root."""
 
 
+# Local-filesystem dirs that have been opted-in via the local file picker.
+# Lives in memory only; intentionally not persisted across restarts, because
+# the security premise is "the user explicitly authorized this via the OS
+# dialog in this session." On restart, the user re-picks if they want to
+# attach more photos from the same place.
+#
+# Once a directory is on this list, every file inside it (including new
+# arrivals) can pass validate_path. That's the right granularity for the
+# desktop-app threat model - the user already has full filesystem access;
+# we're not defending against them, we're defending against accidental
+# traversal from query-string parameters.
+_extra_allowed_dirs: set[Path] = set()
+
+
+def register_local_file(file_path: str | Path) -> Path:
+    """Add the parent directory of a locally-picked file to the allowlist.
+
+    Returns the resolved absolute path of the file. Raises PathOutsideRoots
+    if the file doesn't exist (so a poisoned dialog return can't whitelist
+    a directory by name alone).
+
+    Called by the /api/photos/pick-local endpoint right after the native
+    dialog returns. After this, validate_path will accept the file plus its
+    siblings (so thumbnail generation, image serving, and re-attachment all
+    work for any photo in the same folder).
+    """
+    path = Path(file_path)
+    try:
+        resolved = path.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise PathOutsideRoots(f"Cannot resolve path: {file_path}") from exc
+
+    if not resolved.exists() or not resolved.is_file():
+        raise PathOutsideRoots(f"Cannot register non-existent file: {file_path}")
+
+    _extra_allowed_dirs.add(resolved.parent)
+    logger.info("Registered local picker directory: %s", resolved.parent)
+    return resolved
+
+
 def validate_path(requested: str | Path) -> Path:
-    """Confirm ``requested`` is under one of the configured NAS roots.
+    """Confirm ``requested`` is under one of the allowed roots.
+
+    Allowed roots are:
+      1. The configured NAS roots (DEFAULT_ROOTS), AND
+      2. Any directory previously registered via ``register_local_file``
+         from a local-picker session.
 
     Returns the resolved Path on success. Raises PathOutsideRoots if the
     requested path tries to escape (e.g. via ``..`` or by being an unrelated
-    absolute path like ``C:\\Windows``).
+    absolute path like ``C:\\Windows`` that nobody opted into).
 
     This is the security boundary for everything in this module.
     """
@@ -125,6 +170,14 @@ def validate_path(requested: str | Path) -> Path:
             return resolved
         except ValueError:
             continue  # Try the next root
+
+    # Then check the in-memory allowlist of locally-picked directories
+    for allowed_dir in _extra_allowed_dirs:
+        try:
+            resolved.relative_to(allowed_dir)
+            return resolved
+        except ValueError:
+            continue
 
     raise PathOutsideRoots(
         f"Path is not under any configured NAS root: {requested}"

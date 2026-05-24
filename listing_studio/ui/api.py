@@ -960,6 +960,47 @@ async def get_nas_roots() -> list[dict]:
     return get_roots()
 
 
+@app.post("/api/photos/pick-local")
+async def pick_local_photos_endpoint() -> dict:
+    """Open the OS native file dialog and return selected photo paths.
+
+    Failover for when the NAS isn't reachable, but also useful when Dad has
+    a one-off photo on his desktop he wants to use. The dialog is blocking,
+    so we run it on a worker thread to avoid stalling FastAPI's event loop.
+
+    Each returned file's parent directory is registered with the NAS module's
+    in-memory allowlist, so the existing thumbnail/image/attach endpoints
+    accept these paths the same way they accept NAS paths. The allowlist
+    is session-scoped (cleared on restart) and only ever gets entries from
+    this endpoint - paths from clients can't bypass NAS validation.
+
+    Returns:
+        {"paths": ["C:/Users/.../photo1.jpg", ...]} - empty if cancelled.
+    """
+    import asyncio
+    import logging
+    from listing_studio.core.local_picker import pick_local_photos
+    from listing_studio.core.nas import PathOutsideRoots, register_local_file
+
+    log = logging.getLogger(__name__)
+
+    # The dialog blocks. Push to a thread so async handlers above us don't
+    # stall while the user thinks about which photos to pick.
+    paths = await asyncio.to_thread(pick_local_photos)
+
+    registered: list[str] = []
+    for path in paths:
+        try:
+            resolved = register_local_file(path)
+            registered.append(str(resolved))
+        except PathOutsideRoots as exc:
+            # register_local_file rejects nonexistent files. Skip and log -
+            # the dialog occasionally returns ghosts on some Windows shells.
+            log.warning("Skipping unregisterable local path %s: %s", path, exc)
+
+    return {"paths": registered}
+
+
 @app.get("/api/nas/list")
 async def list_nas_folder(path: str) -> dict:
     """List the contents of a NAS folder.
