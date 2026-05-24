@@ -27,10 +27,14 @@ body.font-scale-xlarge  { zoom: 1.40; }
 
 body.font-scale-large,
 body.font-scale-xlarge {
-    /* let body grow to accommodate zoomed content */
+    /* Body stays at 100% (= viewport height, inherited from base rule)
+       so it remains a fixed-size scroll container. overflow-y: auto
+       triggers when zoomed content overflows it - that's the scroll.
+       NOTE: do NOT set height:auto here or body grows to fit content,
+       removing the overflow that overflow-y:auto depends on. The
+       result of that mistake was: pages went tall, html's overflow:hidden
+       clipped the bottom, and nothing was scrollable. */
     overflow-y: auto;
-    height: auto;
-    min-height: 100%;
 }
 
 body.font-scale-large .chassis,
@@ -72,6 +76,47 @@ body.font-scale-xlarge .statusbar {
     position: sticky;
     bottom: 0;
     z-index: 50;
+}
+
+/* When zoomed, every page becomes longer than the viewport. The app's
+   default layout has nested overflow:auto regions inside view-container -
+   those work great at normal zoom (each region is fixed-size, content
+   scrolls within it) but break at zoom because the chassis becomes
+   auto-height and the inner regions can't compute their height from an
+   auto-height parent. Result: nothing scrolls.
+   Fix: disable the inner overflow rules when zoomed so content flows
+   naturally to its full height, and let body's overflow-y:auto be the
+   sole scroll container. */
+body.font-scale-large #view-container,
+body.font-scale-xlarge #view-container {
+    overflow: visible;
+}
+body.font-scale-large #library-view,
+body.font-scale-xlarge #library-view,
+body.font-scale-large #settings-view,
+body.font-scale-xlarge #settings-view,
+body.font-scale-large #history-view,
+body.font-scale-xlarge #history-view,
+body.font-scale-large #help-view,
+body.font-scale-xlarge #help-view {
+    height: auto;
+    overflow: visible;
+}
+body.font-scale-large .library-body,
+body.font-scale-xlarge .library-body,
+body.font-scale-large .form-panel,
+body.font-scale-xlarge .form-panel,
+body.font-scale-large .help-body,
+body.font-scale-xlarge .help-body,
+body.font-scale-large .help-sidebar,
+body.font-scale-xlarge .help-sidebar,
+body.font-scale-large .help-content,
+body.font-scale-xlarge .help-content {
+    overflow: visible;
+    height: auto;
+    /* library-body and friends were flex-children with overflow:auto;
+       removing the overflow lets them expand to natural content height */
+    max-height: none;
 }
 
 /* At zoomed sizes, hide the brand subtitle and shrink the logo so the
