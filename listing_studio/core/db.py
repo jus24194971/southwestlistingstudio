@@ -68,10 +68,32 @@ def init_engine() -> Engine:
 
 
 def init_db() -> None:
-    """Create all tables, then run lightweight migrations. Idempotent."""
+    """Create all tables, run lightweight migrations, seed reference data.
+
+    Idempotent. Order matters: schema must exist before migrations alter it,
+    and migrations must finish before we try to insert seed rows that
+    depend on new columns.
+    """
     engine = init_engine()
     Base.metadata.create_all(engine)
     _run_migrations(engine)
+    _seed_reference_data()
+
+
+def _seed_reference_data() -> None:
+    """Insert shipped reference rows (currently just category mappings).
+
+    Wrapped in its own try/except so a seed failure can't block the app
+    from starting - the worst case is the suggestion engine has no shipped
+    mappings until the next run.
+    """
+    try:
+        from listing_studio.core import category_suggest
+        with session_scope() as session:
+            category_suggest.seed_shipped_mappings_if_missing(session)
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("Reference data seed failed: %s", exc)
 
 
 def _run_migrations(engine: Engine) -> None:
@@ -91,27 +113,48 @@ def _run_migrations(engine: Engine) -> None:
     from sqlalchemy import inspect, text
 
     inspector = inspect(engine)
-    existing_columns = {col["name"] for col in inspector.get_columns("templates")}
 
-    # Map of column name -> SQL fragment for the ALTER
-    needed_columns = {
-        "model": "TEXT",
-        "year": "TEXT",
-        "finish": "TEXT",
-        "reverb_category": "TEXT",
-        "reverb_subcategories": "TEXT",
-        "category_id": "INTEGER REFERENCES categories(id)",
-        "reverb_shipping_type": "TEXT",
-        "reverb_shipping_flat_cents": "INTEGER NOT NULL DEFAULT 0",
+    # Map of (table_name -> {column_name: SQL type fragment}). Each ALTER runs
+    # only if the column is missing. Skipping the table entirely is fine if
+    # the table doesn't exist yet - create_all() handles that case.
+    needed_columns: dict[str, dict[str, str]] = {
+        "templates": {
+            "model": "TEXT",
+            "year": "TEXT",
+            "finish": "TEXT",
+            "reverb_category": "TEXT",
+            "reverb_subcategories": "TEXT",
+            "category_id": "INTEGER REFERENCES categories(id)",
+            "reverb_shipping_type": "TEXT",
+            "reverb_shipping_flat_cents": "INTEGER NOT NULL DEFAULT 0",
+        },
+        "categories": {
+            "ebay_category_id": "INTEGER",
+            "ebay_category_name": "TEXT",
+            "ebay_category_path": "TEXT",
+            # SQLite has no real BOOLEAN; store as INTEGER. Default 1 (true)
+            # because the existing column-less data assumed leaf-only.
+            "ebay_leaf": "INTEGER NOT NULL DEFAULT 1",
+            "squarespace_store_page_id": "TEXT",
+            "squarespace_store_page_name": "TEXT",
+        },
     }
 
     with engine.begin() as conn:
-        for col_name, col_type in needed_columns.items():
-            if col_name not in existing_columns:
-                # SQLite ALTER TABLE syntax. Using parameterless string interpolation
-                # is safe here because col_name/col_type come from our hardcoded
-                # dict above, not user input.
-                conn.execute(text(f'ALTER TABLE templates ADD COLUMN "{col_name}" {col_type}'))
+        for table_name, cols in needed_columns.items():
+            try:
+                existing = {c["name"] for c in inspector.get_columns(table_name)}
+            except Exception:
+                # Table doesn't exist yet (create_all just made it new with
+                # the right schema); skip the ALTERs.
+                continue
+            for col_name, col_type in cols.items():
+                if col_name not in existing:
+                    # SQLite ALTER TABLE syntax. col_name/col_type come from
+                    # the hardcoded dict above, not user input.
+                    conn.execute(text(
+                        f'ALTER TABLE {table_name} ADD COLUMN "{col_name}" {col_type}'
+                    ))
 
 
 @contextmanager

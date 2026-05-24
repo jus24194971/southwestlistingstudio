@@ -344,6 +344,7 @@
         backdrop.addEventListener("click", e => {
             if (e.target === backdrop) backdrop.remove();
         });
+        LS.attachModalCloseButton(card, backdrop);
         document.body.appendChild(backdrop);
 
         // Initial state for help text

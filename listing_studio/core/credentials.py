@@ -29,6 +29,20 @@ def _key_for(platform: Platform) -> str:
     return f"oauth_token::{platform.value}"
 
 
+def _service_key_for(service_name: str) -> str:
+    """Build the keyring "username" for a non-platform service credential.
+
+    Used for things like image-host API keys (ImgBB, Cloudinary) that aren't
+    marketplace platforms but still belong in the OS credential store rather
+    than the SQLite DB.
+
+    Uses a distinct prefix from the platform scheme so the two namespaces
+    can't collide (e.g. a hypothetical platform named "imgbb" would key as
+    ``oauth_token::imgbb`` while the image host keys as ``service::imgbb``).
+    """
+    return f"service::{service_name}"
+
+
 _keyring_warned = False
 
 
@@ -136,3 +150,51 @@ def account_label(platform: Platform) -> str | None:
     if creds is None:
         return None
     return creds.get("account_label")
+
+
+# ---------------------------------------------------------------------------
+# Service credentials (non-platform: image hosts, future webhooks, etc.)
+# ---------------------------------------------------------------------------
+#
+# Same keyring backend as platform credentials, separate namespace so a
+# hypothetical platform with the same string name doesn't collide. The API
+# mirrors the platform functions so callers feel familiar.
+
+
+def store_service_credentials(service_name: str, payload: dict[str, Any]) -> None:
+    """Store credentials for a non-platform service (e.g. an image host).
+
+    Raises RuntimeError if no keyring backend is available - same contract
+    as the platform version, since this is also a user-initiated save.
+    """
+    serialized = json.dumps(payload, default=str)
+    try:
+        keyring.set_password(settings.keyring_service, _service_key_for(service_name), serialized)
+    except keyring.errors.NoKeyringError as exc:
+        raise RuntimeError(
+            "Cannot save credentials: no keyring backend available."
+        ) from exc
+
+
+def load_service_credentials(service_name: str) -> dict[str, Any] | None:
+    """Retrieve service credentials, or None if not configured."""
+    raw = _safe_get(settings.keyring_service, _service_key_for(service_name))
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def clear_service_credentials(service_name: str) -> None:
+    """Delete service credentials (user clicked Disconnect on the host card)."""
+    try:
+        keyring.delete_password(settings.keyring_service, _service_key_for(service_name))
+    except (keyring.errors.PasswordDeleteError, keyring.errors.NoKeyringError):
+        pass
+
+
+def is_service_connected(service_name: str) -> bool:
+    """Quick yes/no for the settings screen."""
+    return load_service_credentials(service_name) is not None

@@ -13,6 +13,7 @@
             await Promise.all([
                 LS.loadConnectionStatus(),
                 LS.loadPreferences(),
+                LS.loadPhotoHostStatus(),
             ]);
             renderSettings();
         } catch (err) {
@@ -29,6 +30,12 @@
 
     LS.loadPreferences = async function () {
         LS.state.preferences = await LS.api("GET", "/api/settings/preferences");
+    };
+
+    LS.loadPhotoHostStatus = async function () {
+        // Stored in its own state slot since it's not a platform. Shape:
+        //   {connected: bool, service_name: "imgbb"|null, display_name: "ImgBB"|null}
+        LS.state.photoHostStatus = await LS.api("GET", "/api/settings/photo-host");
     };
 
     function renderSettings() {
@@ -57,6 +64,12 @@
             platformsBlock.appendChild(buildPlatformCard(platform));
         }
         container.appendChild(platformsBlock);
+
+        // Image hosting section. Reverb's API requires photos as public URLs,
+        // not binary uploads, so we host them externally and pass URLs to
+        // Reverb. Without a host configured, drafts get created photoless and
+        // Dad drags photos into the Reverb web UI by hand.
+        container.appendChild(buildPhotoHostBlock());
 
         // Default platforms section
         const defaultsBlock = LS.el("div", "section-block");
@@ -344,11 +357,17 @@
         } else {
             const connectBtn = LS.el("button", "btn-connect", "Connect");
             connectBtn.addEventListener("click", () => {
+                // eBay has its own 3-field + OAuth flow modal; everything else
+                // (Reverb, Squarespace) uses the single-API-key path.
+                if (platform === "ebay") {
+                    openEbayConnectModal();
+                    return;
+                }
                 const config = API_KEY_PLATFORMS[platform];
                 if (config) {
                     openApiKeyConnectModal(platform, config);
                 } else {
-                    alert(`${LS.platformDisplay(platform)} OAuth: not yet implemented. Squarespace and Reverb are priority.`);
+                    alert(`${LS.platformDisplay(platform)} OAuth: not yet implemented.`);
                 }
             });
             actions.appendChild(connectBtn);
@@ -357,6 +376,210 @@
 
         card.appendChild(body);
         return card;
+    }
+
+    // ----------------------------------------------------------------------
+    // Image hosting section
+    // ----------------------------------------------------------------------
+
+    /**
+     * Photo-host config card. Behaves like a platform card but talks to the
+     * /api/settings/photo-host/* endpoints. Only one host (ImgBB) for now;
+     * if/when we add Cloudinary etc, this turns into a list keyed by
+     * status.service_name.
+     */
+    function buildPhotoHostBlock() {
+        const block = LS.el("div", "section-block");
+        block.appendChild(buildSectionTitle("Reverb photo hosting"));
+        block.appendChild(LS.el("div", "section-help",
+            "Reverb requires public URLs for photos, not binary uploads. " +
+            "Connect an image host and we'll auto-upload your NAS photos to it, " +
+            "then pass the URLs to Reverb when creating a draft. " +
+            "Without a host, drafts are created with no photos and you'll drag them in by hand."));
+
+        block.appendChild(buildPhotoHostCard());
+        return block;
+    }
+
+    function buildPhotoHostCard() {
+        const status = LS.state.photoHostStatus || { connected: false };
+        const isConnected = !!status.connected;
+
+        const card = LS.el("div", "platform-card" + (isConnected ? " connected" : ""));
+        const body = LS.el("div", "platform-card-body");
+
+        body.appendChild(LS.el("div", "pc-logo imgbb", "IB"));
+
+        const info = LS.el("div", "pc-info");
+        const name = LS.el("div", "pc-name");
+        name.appendChild(document.createTextNode("ImgBB"));
+
+        const pill = LS.el("span",
+            "pc-status-pill " + (isConnected ? "connected" : "disconnected"),
+            isConnected ? "Connected" : "Not Connected");
+        name.appendChild(pill);
+        info.appendChild(name);
+
+        const detail = LS.el("div", "pc-detail");
+        if (isConnected) {
+            detail.innerHTML = "Auto-uploads photos to ImgBB before posting to Reverb.";
+        } else {
+            detail.innerHTML = `Free at <span style="color: var(--gold-bright);">imgbb.com</span>. Generate a key under your account's API page and paste it here.`;
+        }
+        info.appendChild(detail);
+        body.appendChild(info);
+
+        const actions = LS.el("div", "pc-actions");
+        if (isConnected) {
+            const testBtn = LS.el("button", "btn-secondary-sm", "Test");
+            testBtn.addEventListener("click", async () => {
+                testBtn.textContent = "Testing…";
+                testBtn.disabled = true;
+                try {
+                    const result = await LS.api("POST", "/api/settings/photo-host/test");
+                    if (result.ok) {
+                        alert(`✓ ImgBB connection works\n\n${result.account_label || ""}`);
+                    } else {
+                        alert(`✗ Test failed\n\n${result.error || "Unknown error"}`);
+                    }
+                } catch (err) {
+                    alert(`Test failed: ${err.message}`);
+                } finally {
+                    testBtn.textContent = "Test";
+                    testBtn.disabled = false;
+                }
+            });
+            actions.appendChild(testBtn);
+
+            const disconnectBtn = LS.el("button", "btn-danger-sm", "Disconnect");
+            disconnectBtn.addEventListener("click", async () => {
+                if (!confirm("Disconnect ImgBB? Future Reverb drafts won't auto-include photos until you connect another host.")) return;
+                try {
+                    await LS.api("POST", "/api/settings/photo-host/disconnect");
+                    await LS.loadPhotoHostStatus();
+                    renderSettings();
+                } catch (err) {
+                    alert("Disconnect failed: " + err.message);
+                }
+            });
+            actions.appendChild(disconnectBtn);
+        } else {
+            const connectBtn = LS.el("button", "btn-connect", "Connect");
+            connectBtn.addEventListener("click", () => openPhotoHostConnectModal());
+            actions.appendChild(connectBtn);
+        }
+        body.appendChild(actions);
+
+        card.appendChild(body);
+        return card;
+    }
+
+    /**
+     * Modal for entering the ImgBB API key. Closely mirrors openApiKeyConnectModal
+     * but talks to /api/settings/photo-host/imgbb/connect and refreshes the
+     * photo-host status rather than the platform list.
+     */
+    function openPhotoHostConnectModal() {
+        const backdrop = LS.el("div", "modal-backdrop");
+        backdrop.id = "imgbb-connect-backdrop";
+
+        const card = LS.el("div", "modal-card");
+        card.style.maxWidth = "560px";
+
+        const h2 = LS.el("h2");
+        h2.innerHTML = `Connect <em>ImgBB</em>`;
+        card.appendChild(h2);
+
+        card.appendChild(LS.el("div", "modal-sub",
+            "Paste your ImgBB API key below. We'll validate it with a tiny test upload and store it securely in Windows Credential Manager."));
+
+        const help = LS.el("div");
+        help.style.fontSize = "12px";
+        help.style.color = "var(--ink-3)";
+        help.style.lineHeight = "1.5";
+        help.style.marginBottom = "16px";
+        help.innerHTML = `Get a key at <span style="color: var(--gold-bright); font-family: var(--font-mono); font-size: 11px;">imgbb.com → Your account → API</span>. The free tier is enough for the photo volume here. Photos uploaded to ImgBB are accessible by anyone with the URL.`;
+        card.appendChild(help);
+
+        const fieldLabel = LS.el("label");
+        fieldLabel.style.display = "block";
+        fieldLabel.style.fontSize = "11px";
+        fieldLabel.style.color = "var(--ink-3)";
+        fieldLabel.style.textTransform = "uppercase";
+        fieldLabel.style.letterSpacing = "0.08em";
+        fieldLabel.style.marginBottom = "5px";
+        fieldLabel.textContent = "API Key";
+        card.appendChild(fieldLabel);
+
+        const input = LS.el("input");
+        input.type = "password";
+        input.placeholder = "Paste your ImgBB API key…";
+        input.style.width = "100%";
+        input.style.background = "var(--bg-input)";
+        input.style.border = "1px solid var(--line)";
+        input.style.borderRadius = "4px";
+        input.style.padding = "10px 12px";
+        input.style.color = "var(--ink)";
+        input.style.fontFamily = "var(--font-mono)";
+        input.style.fontSize = "13px";
+        card.appendChild(input);
+
+        const status = LS.el("div");
+        status.style.minHeight = "18px";
+        status.style.marginTop = "10px";
+        status.style.fontSize = "12px";
+        status.style.fontFamily = "var(--font-mono)";
+        card.appendChild(status);
+
+        const footer = LS.el("div", "modal-footer-bar");
+        const cancelBtn = LS.el("button", "btn-ghost", "Cancel");
+        cancelBtn.addEventListener("click", () => backdrop.remove());
+        footer.appendChild(cancelBtn);
+
+        const connectBtn = LS.el("button", "btn-update-now", "Test & Save");
+        connectBtn.addEventListener("click", async () => {
+            const apiKey = input.value.trim();
+            if (!apiKey) {
+                status.style.color = "var(--rust-bright)";
+                status.textContent = "Paste a key first.";
+                return;
+            }
+
+            connectBtn.disabled = true;
+            cancelBtn.disabled = true;
+            status.style.color = "var(--ink-3)";
+            status.textContent = "Validating with ImgBB…";
+
+            try {
+                const result = await LS.api("POST",
+                    "/api/settings/photo-host/imgbb/connect",
+                    { api_key: apiKey });
+
+                status.style.color = "var(--moss-bright)";
+                status.textContent = `✓ Connected (${result.account_label || "ImgBB"})`;
+
+                setTimeout(() => {
+                    backdrop.remove();
+                    LS.loadAndRenderSettings();
+                }, 800);
+            } catch (err) {
+                status.style.color = "var(--rust-bright)";
+                status.textContent = err.message || "Failed";
+                connectBtn.disabled = false;
+                cancelBtn.disabled = false;
+            }
+        });
+        footer.appendChild(connectBtn);
+        card.appendChild(footer);
+
+        backdrop.appendChild(card);
+        backdrop.addEventListener("click", e => {
+            if (e.target === backdrop) backdrop.remove();
+        });
+        LS.attachModalCloseButton(card, backdrop);
+        document.body.appendChild(backdrop);
+
+        setTimeout(() => input.focus(), 50);
     }
 
     function buildToggleRow(prefKey, label, helpText) {
@@ -549,8 +772,278 @@
         backdrop.addEventListener("click", e => {
             if (e.target === backdrop) backdrop.remove();
         });
+        LS.attachModalCloseButton(card, backdrop);
         document.body.appendChild(backdrop);
 
         setTimeout(() => input.focus(), 50);
+    }
+
+    // ----------------------------------------------------------------------
+    // eBay-specific connect modal
+    //
+    // eBay needs three fields up front (client_id, client_secret, ru_name)
+    // and a follow-up OAuth dance to authorize Dad's actual seller account.
+    // Step 1: Save & validate the three fields against eBay's app-token
+    //         endpoint. On success, the modal transforms to show step 2.
+    // Step 2: Click "Authorize Seller Account" - browser opens to eBay's
+    //         consent screen. Modal polls the oauth-status endpoint until
+    //         a user token shows up (or the user gives up and closes the
+    //         modal).
+    // ----------------------------------------------------------------------
+
+    function openEbayConnectModal() {
+        const backdrop = LS.el("div", "modal-backdrop");
+        backdrop.id = "ebay-connect-backdrop";
+
+        const card = LS.el("div", "modal-card");
+        card.style.maxWidth = "600px";
+        card.style.maxHeight = "85vh";
+        card.style.overflowY = "auto";
+
+        const h2 = LS.el("h2");
+        h2.innerHTML = `Connect <em>eBay</em>`;
+        card.appendChild(h2);
+
+        card.appendChild(LS.el("div", "modal-sub",
+            "eBay has two steps: app credentials (from your developer dashboard) and seller account authorization (a browser-based OAuth flow). The whole process takes about a minute."));
+
+        // ---- Step 1: app credentials ----
+
+        const step1 = LS.el("div");
+        step1.style.marginTop = "20px";
+        step1.style.paddingTop = "16px";
+        step1.style.borderTop = "1px solid var(--line)";
+
+        const step1Heading = LS.el("div");
+        step1Heading.style.fontSize = "13px";
+        step1Heading.style.fontWeight = "600";
+        step1Heading.style.color = "var(--gold-bright)";
+        step1Heading.style.marginBottom = "8px";
+        step1Heading.textContent = "Step 1: App credentials";
+        step1.appendChild(step1Heading);
+
+        const help = LS.el("div");
+        help.style.fontSize = "12px";
+        help.style.color = "var(--ink-3)";
+        help.style.lineHeight = "1.5";
+        help.style.marginBottom = "16px";
+        help.innerHTML = `Get all three values from <span style="color: var(--gold-bright); font-family: var(--font-mono); font-size: 11px;">developer.ebay.com → My Account → Application Keys</span> (Production column). The RuName is also there, listed as "Redirect URL settings."`;
+        step1.appendChild(help);
+
+        function buildFieldLabel(text) {
+            const l = LS.el("label");
+            l.style.display = "block";
+            l.style.fontSize = "11px";
+            l.style.color = "var(--ink-3)";
+            l.style.textTransform = "uppercase";
+            l.style.letterSpacing = "0.08em";
+            l.style.marginBottom = "5px";
+            l.style.marginTop = "12px";
+            l.textContent = text;
+            return l;
+        }
+
+        function buildFieldInput(placeholder, isSecret) {
+            const i = LS.el("input");
+            i.type = isSecret ? "password" : "text";
+            i.placeholder = placeholder;
+            i.style.cssText = "width: 100%; background: var(--bg-input); border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; color: var(--ink); font-family: var(--font-mono); font-size: 12px;";
+            return i;
+        }
+
+        step1.appendChild(buildFieldLabel("Client ID (App ID)"));
+        const clientIdInput = buildFieldInput("e.g. SouthwesAc-Listings-PRD-...", false);
+        step1.appendChild(clientIdInput);
+
+        step1.appendChild(buildFieldLabel("Client Secret (Cert ID)"));
+        const clientSecretInput = buildFieldInput("Long secret string starting with PRD-...", true);
+        step1.appendChild(clientSecretInput);
+
+        step1.appendChild(buildFieldLabel("RuName (Redirect User Name)"));
+        const ruNameInput = buildFieldInput("e.g. SouthwesAc-Listings-PRD-XXXXXXXXX-XXXXXXXX", false);
+        step1.appendChild(ruNameInput);
+
+        const ruNameHelp = LS.el("div");
+        ruNameHelp.style.fontSize = "11px";
+        ruNameHelp.style.color = "var(--ink-3)";
+        ruNameHelp.style.marginTop = "6px";
+        ruNameHelp.style.lineHeight = "1.5";
+        ruNameHelp.innerHTML = `Set the RuName's redirect URL in eBay's dashboard to <code style="background: var(--bg-input); padding: 2px 5px; border-radius: 3px; color: var(--gold-bright);">http://localhost:8731/api/ebay/oauth/callback</code>`;
+        step1.appendChild(ruNameHelp);
+
+        // Step 1 status + action
+        const step1Status = LS.el("div");
+        step1Status.style.minHeight = "18px";
+        step1Status.style.marginTop = "14px";
+        step1Status.style.fontSize = "12px";
+        step1Status.style.fontFamily = "var(--font-mono)";
+        step1.appendChild(step1Status);
+
+        const step1Footer = LS.el("div");
+        step1Footer.style.display = "flex";
+        step1Footer.style.gap = "8px";
+        step1Footer.style.marginTop = "10px";
+
+        const validateBtn = LS.el("button", "btn-update-now", "Validate & Save Step 1");
+        step1Footer.appendChild(validateBtn);
+        step1.appendChild(step1Footer);
+
+        card.appendChild(step1);
+
+        // ---- Step 2 (hidden until step 1 succeeds) ----
+
+        const step2 = LS.el("div");
+        step2.style.marginTop = "20px";
+        step2.style.paddingTop = "16px";
+        step2.style.borderTop = "1px solid var(--line)";
+        step2.style.display = "none";  // Revealed on step 1 success
+
+        const step2Heading = LS.el("div");
+        step2Heading.style.fontSize = "13px";
+        step2Heading.style.fontWeight = "600";
+        step2Heading.style.color = "var(--gold-bright)";
+        step2Heading.style.marginBottom = "8px";
+        step2Heading.textContent = "Step 2: Authorize the seller account";
+        step2.appendChild(step2Heading);
+
+        const step2Help = LS.el("div");
+        step2Help.style.fontSize = "12px";
+        step2Help.style.color = "var(--ink-3)";
+        step2Help.style.lineHeight = "1.5";
+        step2Help.style.marginBottom = "12px";
+        step2Help.innerHTML = "Clicking the button below opens your default browser to eBay's consent page. Log in as the seller (Dad's eBay account) and approve the permissions. When you come back to this modal, the seller token will be saved automatically.";
+        step2.appendChild(step2Help);
+
+        const authorizeBtn = LS.el("button", "btn-update-now", "→ Authorize Seller Account");
+        step2.appendChild(authorizeBtn);
+
+        const step2Status = LS.el("div");
+        step2Status.style.minHeight = "20px";
+        step2Status.style.marginTop = "14px";
+        step2Status.style.fontSize = "12px";
+        step2Status.style.fontFamily = "var(--font-mono)";
+        step2.appendChild(step2Status);
+
+        card.appendChild(step2);
+
+        // ---- Footer ----
+
+        const footer = LS.el("div", "modal-footer-bar");
+        footer.style.marginTop = "24px";
+        const cancelBtn = LS.el("button", "btn-ghost", "Cancel");
+        cancelBtn.addEventListener("click", () => {
+            stopPolling();
+            backdrop.remove();
+        });
+        footer.appendChild(cancelBtn);
+
+        const doneBtn = LS.el("button", "btn-update-now", "Done");
+        doneBtn.style.display = "none";  // Revealed when step 2 completes
+        doneBtn.addEventListener("click", () => {
+            stopPolling();
+            backdrop.remove();
+            LS.loadAndRenderSettings();
+        });
+        footer.appendChild(doneBtn);
+
+        card.appendChild(footer);
+
+        backdrop.appendChild(card);
+        backdrop.addEventListener("click", e => {
+            if (e.target === backdrop) {
+                stopPolling();
+                backdrop.remove();
+            }
+        });
+        // × in the corner also stops the OAuth poll before removing the modal
+        LS.attachModalCloseButton(card, backdrop, () => { stopPolling(); });
+        document.body.appendChild(backdrop);
+
+        // ---- Step 1 behavior ----
+
+        validateBtn.addEventListener("click", async () => {
+            const clientId = clientIdInput.value.trim();
+            const clientSecret = clientSecretInput.value.trim();
+            const ruName = ruNameInput.value.trim();
+            if (!clientId || !clientSecret || !ruName) {
+                step1Status.style.color = "var(--rust-bright)";
+                step1Status.textContent = "All three fields are required.";
+                return;
+            }
+            validateBtn.disabled = true;
+            step1Status.style.color = "var(--ink-3)";
+            step1Status.textContent = "Validating with eBay…";
+            try {
+                const result = await LS.api("POST", "/api/settings/platforms/ebay/connect", {
+                    client_id: clientId,
+                    client_secret: clientSecret,
+                    ru_name: ruName,
+                });
+                step1Status.style.color = "var(--moss-bright)";
+                step1Status.textContent = `✓ App credentials accepted (${result.account_label})`;
+                // Reveal step 2
+                step2.style.display = "";
+                validateBtn.disabled = true;
+                validateBtn.textContent = "✓ Saved";
+                // Lock the inputs so user can't muck with them
+                clientIdInput.disabled = true;
+                clientSecretInput.disabled = true;
+                ruNameInput.disabled = true;
+            } catch (err) {
+                step1Status.style.color = "var(--rust-bright)";
+                step1Status.textContent = err.message || "Validation failed";
+                validateBtn.disabled = false;
+            }
+        });
+
+        // ---- Step 2 behavior ----
+
+        let pollTimer = null;
+        function stopPolling() {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+        }
+
+        authorizeBtn.addEventListener("click", async () => {
+            authorizeBtn.disabled = true;
+            step2Status.style.color = "var(--ink-3)";
+            step2Status.textContent = "Opening browser…";
+            try {
+                const result = await LS.api("GET", "/api/ebay/oauth/start");
+                if (!result.opened) {
+                    step2Status.innerHTML = `Browser didn't open automatically. <a href="${result.url}" target="_blank" style="color: var(--gold-bright);">Click here to open eBay manually</a>.`;
+                } else {
+                    step2Status.textContent = "Browser opened. Approve in eBay, then come back here…";
+                }
+                // Start polling for the callback to complete. eBay's consent
+                // flow can take 20-60s depending on whether Dad has to log in.
+                pollTimer = setInterval(checkOauthStatus, 2000);
+            } catch (err) {
+                step2Status.style.color = "var(--rust-bright)";
+                step2Status.textContent = err.message || "Failed to start OAuth";
+                authorizeBtn.disabled = false;
+            }
+        });
+
+        async function checkOauthStatus() {
+            try {
+                const s = await LS.api("GET", "/api/settings/platforms/ebay/oauth-status");
+                if (s.has_user_token) {
+                    stopPolling();
+                    step2Status.style.color = "var(--moss-bright)";
+                    step2Status.textContent = `✓ Connected to eBay as ${s.account_label || "(unnamed)"}`;
+                    authorizeBtn.style.display = "none";
+                    doneBtn.style.display = "";
+                    cancelBtn.style.display = "none";
+                }
+            } catch (err) {
+                // Soft-fail; we just keep polling. The user can cancel.
+                console.warn("eBay OAuth status poll failed:", err);
+            }
+        }
+
+        setTimeout(() => clientIdInput.focus(), 50);
     }
 })();

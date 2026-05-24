@@ -132,6 +132,7 @@
         footer.appendChild(closeBtn);
         card.appendChild(footer);
         backdrop.appendChild(card);
+        LS.attachModalCloseButton(card, backdrop, () => { closePicker(); return false; });
         document.body.appendChild(backdrop);
     }
 
@@ -220,6 +221,20 @@
         }
         sidebar.appendChild(rootsSection);
 
+        // Local-computer fallback. Always available - useful even when the
+        // NAS is reachable (Dad sometimes has a one-off photo on his desktop).
+        // When no NAS root is reachable, this is the primary path; see the
+        // banner in buildRootChooser.
+        const localSection = LS.el("div", "picker-section");
+        localSection.appendChild(LS.el("div", "picker-section-label", "From this computer"));
+        const localItem = LS.el("div", "pin-item");
+        localItem.appendChild(LS.el("div", "pin-icon", "💻"));
+        localItem.appendChild(LS.el("div", "pin-name", "Pick photos…"));
+        localItem.style.cursor = "pointer";
+        localItem.addEventListener("click", pickLocalAndStage);
+        localSection.appendChild(localItem);
+        sidebar.appendChild(localSection);
+
         // Selected count
         const selectedSection = LS.el("div", "picker-section");
         selectedSection.appendChild(LS.el("div", "picker-section-label", "Current Selection"));
@@ -234,6 +249,33 @@
         sidebar.appendChild(selectedSection);
 
         return sidebar;
+    }
+
+    /**
+     * Open the OS native file dialog (via the FastAPI bridge), merge any
+     * picked paths into the picker's selection state, then re-render so they
+     * show up in the rail. From the user's perspective this is identical to
+     * having ticked photos in the NAS browser - the same "Add N photos"
+     * button completes the attach to the template.
+     */
+    async function pickLocalAndStage() {
+        try {
+            const result = await LS.api("POST", "/api/photos/pick-local");
+            const paths = result.paths || [];
+            if (paths.length === 0) {
+                // User cancelled or picked nothing - no-op, no alarm
+                return;
+            }
+            for (const p of paths) {
+                if (!LS.state.picker.selectedPaths.includes(p)) {
+                    LS.state.picker.selectedPaths.push(p);
+                }
+            }
+            // Re-render to update the rail and the sidebar count
+            renderPicker();
+        } catch (err) {
+            alert(`Couldn't open the local picker:\n\n${err.message}`);
+        }
     }
 
     // ----------------------------------------------------------------------
@@ -291,18 +333,30 @@
         const wrap = LS.el("div");
         wrap.style.padding = "20px";
 
+        const roots = LS.state.picker.roots || [];
+        const anyReachable = roots.some(r => r.exists);
+
+        // Failover banner: if no NAS root is reachable, lead with the local-
+        // picker option rather than making Dad puzzle over why the NAS tiles
+        // are all greyed out.
+        if (!anyReachable) {
+            wrap.appendChild(buildNasUnreachableBanner());
+        }
+
         const heading = LS.el("h3");
         heading.style.fontFamily = "var(--font-display)";
         heading.style.fontStyle = "italic";
         heading.style.fontSize = "20px";
         heading.style.color = "var(--gold-bright)";
         heading.style.marginBottom = "16px";
-        heading.textContent = "Choose a starting folder";
+        heading.textContent = anyReachable
+            ? "Choose a starting folder"
+            : "NAS folders (currently unreachable)";
         wrap.appendChild(heading);
 
         const grid = LS.el("div", "thumbs-grid");
 
-        for (const root of LS.state.picker.roots || []) {
+        for (const root of roots) {
             const tile = LS.el("div", "thumb");
             tile.style.cursor = root.exists ? "pointer" : "not-allowed";
             tile.style.opacity = root.exists ? "1" : "0.5";
@@ -329,6 +383,54 @@
 
         wrap.appendChild(grid);
         return wrap;
+    }
+
+    /**
+     * Big visible "NAS unreachable, here's how to pick from your computer
+     * instead" banner shown when none of the configured roots resolve.
+     */
+    function buildNasUnreachableBanner() {
+        const banner = LS.el("div");
+        Object.assign(banner.style, {
+            marginBottom: "20px",
+            padding: "16px 18px",
+            background: "var(--bg-input)",
+            border: "1px solid var(--gold)",
+            borderRadius: "6px",
+            fontSize: "13px",
+            lineHeight: "1.5",
+        });
+
+        const title = LS.el("div");
+        title.style.fontWeight = "600";
+        title.style.color = "var(--gold-bright)";
+        title.style.marginBottom = "6px";
+        title.style.fontSize = "14px";
+        title.textContent = "⚠ NAS not reachable";
+        banner.appendChild(title);
+
+        const body = LS.el("div");
+        body.style.color = "var(--ink-2)";
+        body.style.marginBottom = "12px";
+        body.innerHTML = `The configured NAS roots aren't responding (Z: drive offline, VPN disconnected, etc.). You can still attach photos from this computer's local storage — they'll work just like NAS photos.`;
+        banner.appendChild(body);
+
+        const btn = LS.el("button");
+        btn.textContent = "📁 Pick photos from this computer";
+        Object.assign(btn.style, {
+            padding: "8px 14px",
+            background: "var(--gold-bright)",
+            color: "var(--bg-deep)",
+            border: "none",
+            borderRadius: "4px",
+            fontWeight: "600",
+            fontSize: "13px",
+            cursor: "pointer",
+        });
+        btn.addEventListener("click", pickLocalAndStage);
+        banner.appendChild(btn);
+
+        return banner;
     }
 
     function buildFolderTile(folder) {

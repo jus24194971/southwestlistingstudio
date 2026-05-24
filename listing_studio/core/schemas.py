@@ -27,10 +27,23 @@ class CategoryOut(BaseModel):
 
     id: int
     name: str
+
+    # Reverb mapping
     reverb_category_uuid: str | None
     reverb_category_full_name: str | None
     reverb_subcategory_uuids: list[str] = Field(default_factory=list)
     reverb_subcategory_names: list[str] = Field(default_factory=list)
+
+    # eBay mapping
+    ebay_category_id: int | None = None
+    ebay_category_name: str | None = None
+    ebay_category_path: str | None = None
+    ebay_leaf: bool = True
+
+    # Squarespace mapping (store page, not a strict taxonomy)
+    squarespace_store_page_id: str | None = None
+    squarespace_store_page_name: str | None = None
+
     platform_config: dict = Field(default_factory=dict)
     default_condition: str | None
     default_weight_oz: float | None
@@ -44,10 +57,23 @@ class CategoryCreate(BaseModel):
     """Body for creating a new category."""
 
     name: str
+
+    # Reverb
     reverb_category_uuid: str | None = None
     reverb_category_full_name: str | None = None
     reverb_subcategory_uuids: list[str] = Field(default_factory=list)
     reverb_subcategory_names: list[str] = Field(default_factory=list)
+
+    # eBay
+    ebay_category_id: int | None = None
+    ebay_category_name: str | None = None
+    ebay_category_path: str | None = None
+    ebay_leaf: bool = True
+
+    # Squarespace
+    squarespace_store_page_id: str | None = None
+    squarespace_store_page_name: str | None = None
+
     default_condition: str | None = None
     default_weight_oz: float | None = None
     default_shipping_method: str | None = None
@@ -57,10 +83,20 @@ class CategoryUpdate(BaseModel):
     """Body for updating an existing category. All fields optional."""
 
     name: str | None = None
+
     reverb_category_uuid: str | None = None
     reverb_category_full_name: str | None = None
     reverb_subcategory_uuids: list[str] | None = None
     reverb_subcategory_names: list[str] | None = None
+
+    ebay_category_id: int | None = None
+    ebay_category_name: str | None = None
+    ebay_category_path: str | None = None
+    ebay_leaf: bool | None = None
+
+    squarespace_store_page_id: str | None = None
+    squarespace_store_page_name: str | None = None
+
     default_condition: str | None = None
     default_weight_oz: float | None = None
     default_shipping_method: str | None = None
@@ -73,6 +109,51 @@ class ReverbTaxonomyMatch(BaseModel):
     name: str
     full_name: str
     parent_uuid: str | None = None
+
+
+class EbayTaxonomyMatch(BaseModel):
+    """One match from the eBay taxonomy search."""
+
+    category_id: int
+    name: str
+    full_name: str        # The breadcrumb path
+    is_leaf: bool         # eBay only allows listings on leaves
+
+
+class SquarespaceStorePage(BaseModel):
+    """One Squarespace store page (the Squarespace equivalent of a category)."""
+
+    id: str
+    name: str
+
+
+# Cross-platform category suggestion structures
+
+
+class CategorySuggestion(BaseModel):
+    """A single suggested mapping on a target platform.
+
+    Returned from /api/categories/suggestions. Multiple suggestions may be
+    returned for one query; UI shows them ranked by confidence.
+    """
+
+    platform: str         # "reverb" | "ebay" | "squarespace"
+    external_id: str
+    display_name: str
+    display_path: str | None = None
+    confidence: float     # 0.0-1.0
+    source: str           # "shipped" | "learned" | "fuzzy"
+
+
+class CategoryUsageEntry(BaseModel):
+    """A recently-used category, for the "Recent" section of pickers."""
+
+    platform: str
+    external_id: str
+    display_name: str
+    display_path: str | None = None
+    last_used_at: datetime
+    use_count: int
 
 
 # ---------------------------------------------------------------------------

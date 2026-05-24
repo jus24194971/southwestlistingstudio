@@ -28,6 +28,33 @@
             .replace(/'/g, "&#039;");
     };
 
+    /**
+     * Add a "×" close button to the top-right corner of a modal card.
+     *
+     * Every modal in the app uses the same .modal-backdrop + .modal-card
+     * structure. This helper makes the close affordance consistent across
+     * all of them - clicking the ×, the backdrop, or the modal's own
+     * Cancel/Done button all dismiss the modal.
+     *
+     * Pass the card element (positioned: relative is applied by the
+     * .modal-card class) and the backdrop element to remove on click.
+     * Optional `onBeforeClose` runs first (useful for stopping polls,
+     * confirming unsaved changes, etc.); if it returns false, the close
+     * is cancelled.
+     */
+    LS.attachModalCloseButton = function (card, backdrop, onBeforeClose) {
+        const btn = LS.el("button", "modal-close-x", "×");
+        btn.setAttribute("aria-label", "Close");
+        btn.setAttribute("title", "Close");
+        btn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (onBeforeClose && onBeforeClose() === false) return;
+            backdrop.remove();
+        });
+        card.appendChild(btn);
+        return btn;
+    };
+
     // ----- Fetch -----
 
     LS.api = async function (method, path, body) {

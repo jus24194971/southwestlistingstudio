@@ -35,6 +35,12 @@ fb_temp/
 thumbnail_cache/
 logs/
 
+# ...but the packaged-with-the-app data lives inside the python package
+# and IS source-controlled (seed JSON, reference files for the suggestion
+# engine, etc). Negate the data/ rule for that specific path.
+!listing_studio/data/
+!listing_studio/data/**
+
 # Secrets
 .env
 .env.*

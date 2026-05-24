@@ -113,8 +113,25 @@ class Category(Base):
     reverb_subcategory_uuids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     reverb_subcategory_names: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 
-    # Future-proofing: per-platform extra config (eBay category_id, etc).
-    # Keyed by platform.value: {"ebay": {...}, "etsy": {...}}
+    # eBay-specific taxonomy mapping. eBay uses numeric category IDs; listings
+    # are only allowed on leaf categories (non-leaf = error at post time). We
+    # store the leaf flag so the UI can warn the user before they save a
+    # mid-tree category.
+    ebay_category_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ebay_category_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Full breadcrumb path, e.g. "Musical Instruments & Gear > Guitars & Basses > Parts & Accessories > Guitar Tuners"
+    ebay_category_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ebay_leaf: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # Squarespace doesn't have a strict taxonomy - products live on "store
+    # pages" that the user defines. We record which store page this category
+    # maps to (one page per category in our model; Squarespace allows more
+    # but Dad's setup is one-to-one).
+    squarespace_store_page_id: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    squarespace_store_page_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # Future-proofing: per-platform extra config (Etsy, etc).
+    # Keyed by platform.value: {"etsy": {...}}
     platform_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
 
     # Optional defaults that pre-fill template fields when creating a template
@@ -507,4 +524,93 @@ class Preference(Base):
     value: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+# ---------------------------------------------------------------------------
+# Cross-platform category mapping + recently-used tracking
+# ---------------------------------------------------------------------------
+
+
+class CategoryMapping(Base):
+    """A learned or shipped pairing between two platforms' category systems.
+
+    The cross-platform suggestion engine uses these to answer "if Dad picked
+    Reverb's 'Parts > Tuners', what's the corresponding eBay category?" We
+    seed the table at first run with a shipped JSON of common mappings, and
+    record new pairings every time the user saves a Category with two or
+    more platforms set.
+
+    Each row is one direction (platform_a -> platform_b). We insert both
+    directions so suggestions work either way.
+
+    confidence: 0.0-1.0. Shipped entries default to 1.0 (we know they're
+    right). Learned entries also default to 1.0. Future fuzzy matches could
+    use lower scores. Not used for ranking yet but reserved for it.
+
+    source: 'shipped' (came from the seed JSON) or 'learned' (recorded
+    from a user's save). Used to distinguish so we don't pollute Dad's
+    custom mappings with our defaults.
+    """
+
+    __tablename__ = "category_mappings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # Source platform
+    platform_a: Mapped[Platform] = mapped_column(
+        Enum(Platform, native_enum=False), nullable=False, index=True
+    )
+    external_id_a: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    name_a: Mapped[str] = mapped_column(String(300), nullable=False)
+
+    # Target platform
+    platform_b: Mapped[Platform] = mapped_column(
+        Enum(Platform, native_enum=False), nullable=False, index=True
+    )
+    external_id_b: Mapped[str] = mapped_column(String(120), nullable=False)
+    name_b: Mapped[str] = mapped_column(String(300), nullable=False)
+
+    confidence: Mapped[float] = mapped_column(nullable=False, default=1.0)
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="learned")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        # We allow duplicate pairings (same A->B more than once) because the
+        # save endpoint upserts on (a, ext_a, b) and the duplicate-pair case
+        # is handled in code; SQLite makes a strict unique constraint here
+        # awkward for the bidirectional insert pattern.
+        Index("ix_category_mappings_lookup", "platform_a", "external_id_a", "platform_b"),
+    )
+
+
+class CategoryUsage(Base):
+    """Tracks how recently / how often a platform-specific category has been
+    picked. Powers the "Recent" section above search results in each picker.
+
+    Key is (platform, external_id). Updated on every Category save that uses
+    that taxonomy entry. The UI sorts by last_used_at descending and trims
+    to a small N (e.g. top 8) for display.
+    """
+
+    __tablename__ = "category_usage"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    platform: Mapped[Platform] = mapped_column(
+        Enum(Platform, native_enum=False), nullable=False, index=True
+    )
+    external_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    # Optional full path for display (e.g. eBay's breadcrumb)
+    display_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+    last_used_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (
+        UniqueConstraint("platform", "external_id", name="uq_category_usage_platform_extid"),
     )

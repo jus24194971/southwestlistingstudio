@@ -122,6 +122,77 @@ class SquarespaceConnector(PlatformConnector):
         return True, site_title
 
     # ------------------------------------------------------------------
+    # Store pages (the Squarespace equivalent of categories)
+    # ------------------------------------------------------------------
+
+    async def fetch_store_pages(self) -> list[dict[str, str]]:
+        """Return the user's Squarespace store pages as ``[{id, name}, ...]``.
+
+        Squarespace doesn't expose a direct "list commerce pages" endpoint
+        on the public v1 API, so we infer the set from existing products:
+        every product carries its ``storePageId`` and a human label. We
+        scan products (paginating with ``cursor``) and return the unique
+        pages observed.
+
+        Returns an empty list if the API key isn't set, no products exist,
+        or the call fails — callers can fall back to a free-text input.
+        """
+        api_key = self._get_api_key()
+        if not api_key:
+            return []
+
+        seen: dict[str, str] = {}
+        cursor: str | None = None
+
+        try:
+            async with httpx.AsyncClient(timeout=self.TIMEOUT_SECONDS) as client:
+                # Cap at 5 pages of products (5 * 200 = 1000 products) so we
+                # don't spin forever on a huge catalog. Most shops fit in
+                # one page.
+                for _ in range(5):
+                    params = {"limit": 200}
+                    if cursor:
+                        params["cursor"] = cursor
+                    response = await client.get(
+                        f"{self.BASE_URL}/commerce/products",
+                        headers=self._headers(api_key),
+                        params=params,
+                    )
+                    if response.status_code != 200:
+                        logger.warning(
+                            "Squarespace products fetch failed: %s",
+                            response.status_code,
+                        )
+                        break
+
+                    body = response.json()
+                    for product in body.get("products", []):
+                        page_id = product.get("storePageId")
+                        # The product's URL usually carries the page slug;
+                        # we don't have a clean page-name field, so we
+                        # fall back to the slug if no friendlier name is
+                        # available.
+                        page_name = (
+                            product.get("storePageSlug")
+                            or product.get("urlSlug")
+                            or page_id
+                        )
+                        if page_id and page_id not in seen:
+                            seen[page_id] = str(page_name)
+
+                    pagination = body.get("pagination") or {}
+                    if not pagination.get("hasNextPage"):
+                        break
+                    cursor = pagination.get("nextPageCursor")
+                    if not cursor:
+                        break
+        except httpx.RequestError as exc:
+            logger.warning("Squarespace store-page fetch network error: %s", exc)
+            return []
+
+        return [{"id": pid, "name": name} for pid, name in seen.items()]
+
+    # ------------------------------------------------------------------
     # Posting / product creation
     # ------------------------------------------------------------------
 

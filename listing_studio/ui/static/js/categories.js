@@ -74,10 +74,20 @@
         const isEdit = !!existing;
         const state = {
             name: existing ? existing.name : "",
+            // Reverb
             reverb_category_uuid: existing ? existing.reverb_category_uuid : null,
             reverb_category_full_name: existing ? existing.reverb_category_full_name : null,
             reverb_subcategory_uuids: existing ? [...(existing.reverb_subcategory_uuids || [])] : [],
             reverb_subcategory_names: existing ? [...(existing.reverb_subcategory_names || [])] : [],
+            // eBay (single leaf only - no subcategories)
+            ebay_category_id: existing ? existing.ebay_category_id : null,
+            ebay_category_name: existing ? existing.ebay_category_name : null,
+            ebay_category_path: existing ? existing.ebay_category_path : null,
+            ebay_leaf: existing ? (existing.ebay_leaf !== false) : true,
+            // Squarespace (store page assignment, not a strict taxonomy)
+            squarespace_store_page_id: existing ? existing.squarespace_store_page_id : null,
+            squarespace_store_page_name: existing ? existing.squarespace_store_page_name : null,
+            // Shared defaults
             default_condition: existing ? existing.default_condition : null,
             default_weight_oz: existing ? existing.default_weight_oz : null,
             default_shipping_method: existing ? existing.default_shipping_method : null,
@@ -166,13 +176,25 @@
         });
         reverbSection.appendChild(resultsContainer);
 
+        // Recent-used list above the Reverb search results. Refreshed each time
+        // the modal opens; updates as Dad saves categories.
+        const reverbRecent = LS.el("div");
+        reverbRecent.style.marginTop = "8px";
+        reverbSection.appendChild(reverbRecent);
+        loadRecentUsed("reverb", reverbRecent, (entry) => {
+            state.reverb_category_uuid = entry.external_id;
+            state.reverb_category_full_name = entry.display_path || entry.display_name;
+            renderCurrentReverbSelection(currentDisplay, state);
+            refreshSuggestions();
+        });
+
         // Search behavior - debounced
         let searchTimer = null;
         async function doSearch(query) {
             try {
                 const results = await LS.api("GET",
                     `/api/platforms/reverb/taxonomy/search?q=${encodeURIComponent(query)}&limit=30`);
-                renderSearchResults(resultsContainer, results, state, currentDisplay);
+                renderSearchResults(resultsContainer, results, state, currentDisplay, refreshSuggestions);
             } catch (err) {
                 resultsContainer.innerHTML = "";
                 const errMsg = LS.el("div");
@@ -190,7 +212,48 @@
         // Show initial alphabetical list
         doSearch("");
 
+        // Cross-platform suggestion callout: shown when Reverb is picked but
+        // eBay isn't, suggesting an eBay category to match. Mirror on the
+        // eBay section for the reverse direction. refreshSuggestions() is
+        // declared further down (closure-captured here, defined later).
+        const reverbSuggestion = LS.el("div");
+        reverbSection.appendChild(reverbSuggestion);
+
         card.appendChild(reverbSection);
+
+        // --- eBay section ---
+        const ebaySection = buildEbaySection(state, refreshSuggestionsHandle());
+        card.appendChild(ebaySection.el);
+
+        // --- Squarespace section ---
+        const squarespaceSection = buildSquarespaceSection(state);
+        card.appendChild(squarespaceSection.el);
+
+        // The actual suggestion-refresher closure - re-renders both callouts
+        // whenever either picker's state changes. Pulled together here so it
+        // can see the section refs.
+        function refreshSuggestions() {
+            renderSuggestionCallout(
+                reverbSuggestion,
+                "reverb", state.reverb_category_uuid, state.reverb_category_full_name,
+                "ebay",
+                (match) => {
+                    state.ebay_category_id = parseInt(match.external_id, 10);
+                    state.ebay_category_name = match.display_name;
+                    state.ebay_category_path = match.display_path || match.display_name;
+                    state.ebay_leaf = true; // assume true; UI warns if proven otherwise
+                    ebaySection.refreshDisplay();
+                    refreshSuggestions();
+                },
+            );
+            ebaySection.refreshSuggestion();
+        }
+        // Now expose the handle that the eBay section needs at construction
+        function refreshSuggestionsHandle() {
+            // Returned to buildEbaySection so its picker can trigger us
+            return () => refreshSuggestions();
+        }
+        refreshSuggestions(); // initial render
 
         // --- Defaults section ---
         const defaultsSection = LS.el("div");
@@ -292,6 +355,12 @@
                 reverb_category_full_name: state.reverb_category_full_name,
                 reverb_subcategory_uuids: state.reverb_subcategory_uuids,
                 reverb_subcategory_names: state.reverb_subcategory_names,
+                ebay_category_id: state.ebay_category_id,
+                ebay_category_name: state.ebay_category_name,
+                ebay_category_path: state.ebay_category_path,
+                ebay_leaf: state.ebay_leaf,
+                squarespace_store_page_id: state.squarespace_store_page_id,
+                squarespace_store_page_name: state.squarespace_store_page_name,
                 default_condition: state.default_condition,
                 default_weight_oz: state.default_weight_oz,
                 default_shipping_method: state.default_shipping_method,
@@ -320,6 +389,7 @@
         backdrop.addEventListener("click", e => {
             if (e.target === backdrop) backdrop.remove();
         });
+        LS.attachModalCloseButton(card, backdrop);
         document.body.appendChild(backdrop);
 
         setTimeout(() => nameInput.focus(), 50);
@@ -425,7 +495,571 @@
         }
     }
 
-    function renderSearchResults(host, results, state, currentDisplay) {
+    // ------------------------------------------------------------------
+    // eBay section (taxonomy picker + suggestion callout from Reverb side)
+    // ------------------------------------------------------------------
+
+    /**
+     * Build the eBay taxonomy section parallel to the Reverb one above it.
+     * eBay listings only go on leaf categories, so we surface a warning
+     * pill when the user picks a non-leaf node.
+     *
+     * @param state The shared editor state object
+     * @param onAnyChange Called whenever state.ebay_* fields change so the
+     *                    outer scope can refresh cross-platform suggestions.
+     * @returns {{el, refreshDisplay, refreshSuggestion}} - el is the DOM
+     *          subtree; refreshDisplay re-renders the "current" pill when
+     *          the eBay state was changed externally; refreshSuggestion
+     *          re-renders the "suggested eBay match" callout if Reverb was
+     *          picked but eBay wasn't.
+     */
+    function buildEbaySection(state, onAnyChange) {
+        const section = LS.el("div");
+        section.style.marginTop = "24px";
+        section.style.paddingTop = "20px";
+        section.style.borderTop = "1px solid var(--line)";
+
+        const header = LS.el("div");
+        header.style.display = "flex";
+        header.style.alignItems = "center";
+        header.style.gap = "10px";
+        header.style.marginBottom = "12px";
+        const logo = LS.el("span", null, "eBay");
+        logo.style.fontFamily = "var(--font-display)";
+        logo.style.fontStyle = "italic";
+        logo.style.color = "var(--gold-bright)";
+        logo.style.fontSize = "16px";
+        header.appendChild(logo);
+        const tag = LS.el("span", null, "Taxonomy Mapping");
+        tag.style.fontSize = "10px";
+        tag.style.textTransform = "uppercase";
+        tag.style.letterSpacing = "0.08em";
+        tag.style.color = "var(--ink-3)";
+        header.appendChild(tag);
+        section.appendChild(header);
+
+        // Current selection pill
+        const currentDisplay = LS.el("div");
+        Object.assign(currentDisplay.style, {
+            padding: "12px",
+            background: "var(--bg-input)",
+            borderRadius: "4px",
+            marginBottom: "12px",
+            fontSize: "13px",
+            minHeight: "44px",
+        });
+        section.appendChild(currentDisplay);
+
+        // Suggestion callout (filled from Reverb-side picks)
+        const suggestionCallout = LS.el("div");
+        section.appendChild(suggestionCallout);
+
+        // Search input
+        const searchLabel = LS.el("div", "pref-label", "Search eBay's category tree");
+        searchLabel.style.fontSize = "11px";
+        searchLabel.style.textTransform = "uppercase";
+        searchLabel.style.letterSpacing = "0.08em";
+        searchLabel.style.color = "var(--ink-3)";
+        searchLabel.style.marginBottom = "6px";
+        section.appendChild(searchLabel);
+
+        const searchInput = buildInput("");
+        searchInput.placeholder = "Type to search (e.g. tuner, pickup, body)";
+        section.appendChild(searchInput);
+
+        // Recent-used list above results
+        const recentHost = LS.el("div");
+        recentHost.style.marginTop = "8px";
+        section.appendChild(recentHost);
+        loadRecentUsed("ebay", recentHost, (entry) => {
+            state.ebay_category_id = parseInt(entry.external_id, 10);
+            state.ebay_category_name = entry.display_name;
+            state.ebay_category_path = entry.display_path || entry.display_name;
+            state.ebay_leaf = true;
+            renderEbayCurrent();
+            if (onAnyChange) onAnyChange();
+        });
+
+        // Search results container
+        const resultsHost = LS.el("div");
+        Object.assign(resultsHost.style, {
+            marginTop: "8px",
+            maxHeight: "260px",
+            overflowY: "auto",
+            border: "1px solid var(--line)",
+            borderRadius: "4px",
+        });
+        section.appendChild(resultsHost);
+
+        function renderEbayResults(results) {
+            resultsHost.innerHTML = "";
+            if (!results || results.length === 0) {
+                const empty = LS.el("div");
+                empty.style.padding = "12px";
+                empty.style.color = "var(--ink-3)";
+                empty.style.fontSize = "12px";
+                empty.style.fontStyle = "italic";
+                empty.textContent = "No matches.";
+                resultsHost.appendChild(empty);
+                return;
+            }
+            for (const r of results) {
+                const item = LS.el("div");
+                Object.assign(item.style, {
+                    padding: "10px 12px",
+                    cursor: "pointer",
+                    borderBottom: "1px solid var(--line)",
+                    fontSize: "13px",
+                    display: "flex",
+                    gap: "8px",
+                    alignItems: "center",
+                });
+                item.addEventListener("mouseenter", () => {
+                    item.style.background = "var(--bg-input)";
+                });
+                item.addEventListener("mouseleave", () => {
+                    item.style.background = "transparent";
+                });
+
+                const text = LS.el("div");
+                text.style.flex = "1";
+                text.style.minWidth = "0";
+
+                const nameRow = LS.el("div");
+                nameRow.style.display = "flex";
+                nameRow.style.alignItems = "center";
+                nameRow.style.gap = "6px";
+                const nameEl = LS.el("span", null, r.name);
+                nameEl.style.fontWeight = "500";
+                nameRow.appendChild(nameEl);
+                if (!r.is_leaf) {
+                    const nonLeaf = LS.el("span", null, "non-leaf");
+                    nonLeaf.style.fontSize = "10px";
+                    nonLeaf.style.padding = "1px 5px";
+                    nonLeaf.style.background = "var(--rust)";
+                    nonLeaf.style.color = "white";
+                    nonLeaf.style.borderRadius = "3px";
+                    nonLeaf.title = "eBay won't accept listings on non-leaf categories";
+                    nameRow.appendChild(nonLeaf);
+                }
+                text.appendChild(nameRow);
+
+                const pathEl = LS.el("div");
+                pathEl.style.fontSize = "11px";
+                pathEl.style.color = "var(--ink-3)";
+                pathEl.style.fontFamily = "var(--font-mono)";
+                pathEl.textContent = r.full_name;
+                text.appendChild(pathEl);
+
+                item.appendChild(text);
+
+                const setBtn = LS.el("button");
+                setBtn.textContent = "Select";
+                Object.assign(setBtn.style, {
+                    fontSize: "11px",
+                    padding: "3px 8px",
+                    background: "transparent",
+                    border: "1px solid var(--gold)",
+                    color: "var(--gold-bright)",
+                    borderRadius: "3px",
+                    cursor: "pointer",
+                });
+                setBtn.addEventListener("click", (e) => {
+                    e.stopPropagation();
+                    state.ebay_category_id = r.category_id;
+                    state.ebay_category_name = r.name;
+                    state.ebay_category_path = r.full_name;
+                    state.ebay_leaf = r.is_leaf;
+                    renderEbayCurrent();
+                    if (onAnyChange) onAnyChange();
+                });
+                item.appendChild(setBtn);
+
+                resultsHost.appendChild(item);
+            }
+        }
+
+        let searchTimer = null;
+        async function doSearch(q) {
+            try {
+                const results = await LS.api("GET",
+                    `/api/platforms/ebay/taxonomy/search?q=${encodeURIComponent(q)}&limit=30`);
+                renderEbayResults(results);
+            } catch (err) {
+                resultsHost.innerHTML = "";
+                const errMsg = LS.el("div");
+                errMsg.style.padding = "12px";
+                errMsg.style.color = "var(--rust-bright)";
+                errMsg.style.fontSize = "12px";
+                errMsg.textContent = `Search failed: ${err.message}. Connect eBay in Settings to enable taxonomy search.`;
+                resultsHost.appendChild(errMsg);
+            }
+        }
+        searchInput.addEventListener("input", () => {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(() => doSearch(searchInput.value.trim()), 250);
+        });
+        // Initial load
+        doSearch("");
+
+        function renderEbayCurrent() {
+            currentDisplay.innerHTML = "";
+            if (!state.ebay_category_id) {
+                const empty = LS.el("div");
+                empty.style.color = "var(--ink-3)";
+                empty.style.fontStyle = "italic";
+                empty.textContent = "No eBay category selected yet";
+                currentDisplay.appendChild(empty);
+                return;
+            }
+            const row = LS.el("div");
+            row.style.display = "flex";
+            row.style.alignItems = "center";
+            row.style.gap = "8px";
+
+            const idChip = LS.el("span");
+            idChip.style.fontSize = "10px";
+            idChip.style.background = "var(--gold-bright)";
+            idChip.style.color = "var(--bg-deep)";
+            idChip.style.padding = "2px 6px";
+            idChip.style.borderRadius = "3px";
+            idChip.style.fontWeight = "600";
+            idChip.style.fontFamily = "var(--font-mono)";
+            idChip.textContent = `ID ${state.ebay_category_id}`;
+            row.appendChild(idChip);
+
+            if (!state.ebay_leaf) {
+                const warn = LS.el("span", null, "⚠ non-leaf");
+                warn.style.fontSize = "10px";
+                warn.style.background = "var(--rust)";
+                warn.style.color = "white";
+                warn.style.padding = "2px 6px";
+                warn.style.borderRadius = "3px";
+                warn.title = "eBay will reject listings on this category - pick a leaf instead";
+                row.appendChild(warn);
+            }
+
+            const name = LS.el("span");
+            name.style.fontSize = "13px";
+            name.textContent = state.ebay_category_path || state.ebay_category_name;
+            row.appendChild(name);
+
+            const clear = LS.el("button");
+            clear.textContent = "×";
+            clear.title = "Clear selection";
+            Object.assign(clear.style, {
+                marginLeft: "auto",
+                background: "transparent",
+                border: "none",
+                color: "var(--ink-3)",
+                cursor: "pointer",
+                fontSize: "18px",
+                padding: "0 4px",
+            });
+            clear.addEventListener("click", () => {
+                state.ebay_category_id = null;
+                state.ebay_category_name = null;
+                state.ebay_category_path = null;
+                state.ebay_leaf = true;
+                renderEbayCurrent();
+                if (onAnyChange) onAnyChange();
+            });
+            row.appendChild(clear);
+
+            currentDisplay.appendChild(row);
+        }
+        renderEbayCurrent();
+
+        function refreshSuggestion() {
+            // Suggest an eBay category if Reverb is picked but eBay isn't
+            renderSuggestionCallout(
+                suggestionCallout,
+                "reverb", state.reverb_category_uuid, state.reverb_category_full_name,
+                "ebay",
+                (match) => {
+                    state.ebay_category_id = parseInt(match.external_id, 10);
+                    state.ebay_category_name = match.display_name;
+                    state.ebay_category_path = match.display_path || match.display_name;
+                    state.ebay_leaf = true; // suggestion source assumed leaf-valid
+                    renderEbayCurrent();
+                    if (onAnyChange) onAnyChange();
+                },
+                // Skip if eBay is already picked
+                () => state.ebay_category_id == null,
+            );
+        }
+
+        return {
+            el: section,
+            refreshDisplay: renderEbayCurrent,
+            refreshSuggestion: refreshSuggestion,
+        };
+    }
+
+    // ------------------------------------------------------------------
+    // Squarespace section (store-page dropdown - not a strict taxonomy)
+    // ------------------------------------------------------------------
+
+    function buildSquarespaceSection(state) {
+        const section = LS.el("div");
+        section.style.marginTop = "24px";
+        section.style.paddingTop = "20px";
+        section.style.borderTop = "1px solid var(--line)";
+
+        const header = LS.el("div");
+        header.style.display = "flex";
+        header.style.alignItems = "center";
+        header.style.gap = "10px";
+        header.style.marginBottom = "8px";
+        const logo = LS.el("span", null, "Squarespace");
+        logo.style.fontFamily = "var(--font-display)";
+        logo.style.fontStyle = "italic";
+        logo.style.color = "var(--gold-bright)";
+        logo.style.fontSize = "16px";
+        header.appendChild(logo);
+        const tag = LS.el("span", null, "Store Page");
+        tag.style.fontSize = "10px";
+        tag.style.textTransform = "uppercase";
+        tag.style.letterSpacing = "0.08em";
+        tag.style.color = "var(--ink-3)";
+        header.appendChild(tag);
+        section.appendChild(header);
+
+        const help = LS.el("div");
+        help.style.fontSize = "12px";
+        help.style.color = "var(--ink-3)";
+        help.style.marginBottom = "10px";
+        help.style.lineHeight = "1.5";
+        help.textContent = "Squarespace doesn't have a fixed taxonomy. Products live on the store pages you've set up. Pick which page this category's listings should land on.";
+        section.appendChild(help);
+
+        const select = LS.el("select");
+        select.style.cssText = "width: 100%; background: var(--bg-input); border: 1px solid var(--line); border-radius: 4px; padding: 8px 12px; color: var(--ink); font-size: 13px;";
+        const loadingOpt = LS.el("option", null, "Loading pages…");
+        loadingOpt.value = "";
+        loadingOpt.disabled = true;
+        select.appendChild(loadingOpt);
+        section.appendChild(select);
+
+        const fallback = LS.el("div");
+        fallback.style.marginTop = "8px";
+        fallback.style.fontSize = "11px";
+        fallback.style.color = "var(--ink-3)";
+        section.appendChild(fallback);
+
+        // Fetch pages from the backend - may return empty if Squarespace
+        // isn't connected or has no products yet.
+        (async () => {
+            let pages = [];
+            try {
+                pages = await LS.api("GET", "/api/platforms/squarespace/store-pages");
+            } catch (err) {
+                console.warn("Squarespace pages fetch failed:", err);
+            }
+
+            select.innerHTML = "";
+            const noneOpt = LS.el("option", null, "(no page assigned)");
+            noneOpt.value = "";
+            if (!state.squarespace_store_page_id) noneOpt.selected = true;
+            select.appendChild(noneOpt);
+
+            // If the saved state has a page that isn't in the fetched list
+            // (e.g. Squarespace disconnected since save), surface it as a
+            // pinned option at the top with a "(saved)" marker.
+            if (state.squarespace_store_page_id &&
+                !pages.find(p => p.id === state.squarespace_store_page_id)) {
+                const o = LS.el("option", null,
+                    `${state.squarespace_store_page_name || state.squarespace_store_page_id} (saved)`);
+                o.value = state.squarespace_store_page_id;
+                o.selected = true;
+                select.appendChild(o);
+            }
+
+            for (const p of pages) {
+                const o = LS.el("option", null, p.name);
+                o.value = p.id;
+                if (p.id === state.squarespace_store_page_id) o.selected = true;
+                select.appendChild(o);
+            }
+
+            if (pages.length === 0) {
+                fallback.innerHTML = "Squarespace returned no store pages. Connect Squarespace in Settings or create your first product there to populate this dropdown.";
+            }
+        })();
+
+        select.addEventListener("change", () => {
+            const selectedOpt = select.options[select.selectedIndex];
+            if (select.value) {
+                state.squarespace_store_page_id = select.value;
+                state.squarespace_store_page_name = selectedOpt.textContent;
+            } else {
+                state.squarespace_store_page_id = null;
+                state.squarespace_store_page_name = null;
+            }
+        });
+
+        return { el: section };
+    }
+
+    // ------------------------------------------------------------------
+    // Recently-used helper - shared by Reverb and eBay sections
+    // ------------------------------------------------------------------
+
+    /**
+     * Populate a "Recent" pill row with the most recently used categories
+     * on a given platform. Clicking a pill applies it via the onSelect
+     * callback. Hides itself if no entries are returned.
+     */
+    async function loadRecentUsed(platform, host, onSelect) {
+        host.innerHTML = "";
+        let entries = [];
+        try {
+            entries = await LS.api("GET",
+                `/api/categories/usage/recent?platform=${platform}&limit=6`);
+        } catch (err) {
+            // Soft-fail; empty recent is just "no list shown"
+            return;
+        }
+        if (!entries || entries.length === 0) return;
+
+        const label = LS.el("div");
+        label.style.fontSize = "10px";
+        label.style.textTransform = "uppercase";
+        label.style.letterSpacing = "0.08em";
+        label.style.color = "var(--ink-3)";
+        label.style.marginBottom = "6px";
+        label.textContent = "Recently used";
+        host.appendChild(label);
+
+        const row = LS.el("div");
+        row.style.display = "flex";
+        row.style.flexWrap = "wrap";
+        row.style.gap = "6px";
+        row.style.marginBottom = "8px";
+
+        for (const e of entries) {
+            const pill = LS.el("button");
+            pill.textContent = e.display_name;
+            pill.title = e.display_path || e.display_name;
+            Object.assign(pill.style, {
+                fontSize: "12px",
+                padding: "4px 10px",
+                background: "var(--bg-panel)",
+                border: "1px solid var(--line)",
+                borderRadius: "12px",
+                color: "var(--ink-2)",
+                cursor: "pointer",
+            });
+            pill.addEventListener("mouseenter", () => {
+                pill.style.background = "var(--bg-input)";
+                pill.style.borderColor = "var(--gold)";
+            });
+            pill.addEventListener("mouseleave", () => {
+                pill.style.background = "var(--bg-panel)";
+                pill.style.borderColor = "var(--line)";
+            });
+            pill.addEventListener("click", () => onSelect(e));
+            row.appendChild(pill);
+        }
+        host.appendChild(row);
+    }
+
+    // ------------------------------------------------------------------
+    // Cross-platform suggestion callout
+    // ------------------------------------------------------------------
+
+    /**
+     * Render a "suggested target-platform match" callout when ``fromId``
+     * is set. Hides itself when ``shouldShow()`` returns false (typically
+     * "the target platform isn't already picked").
+     */
+    async function renderSuggestionCallout(host, fromPlatform, fromId, fromName, toPlatform, onApply, shouldShow) {
+        host.innerHTML = "";
+        if (!fromId) return;
+        if (shouldShow && !shouldShow()) return;
+
+        let suggestions = [];
+        try {
+            const params = `from_platform=${fromPlatform}&from_id=${encodeURIComponent(fromId)}&to_platform=${toPlatform}`;
+            suggestions = await LS.api("GET", `/api/categories/suggestions?${params}`);
+        } catch (err) {
+            return;
+        }
+        if (!suggestions || suggestions.length === 0) return;
+
+        const top = suggestions[0];
+        const platformLabel = toPlatform === "ebay" ? "eBay" :
+                              toPlatform === "reverb" ? "Reverb" : toPlatform;
+
+        const wrap = LS.el("div");
+        Object.assign(wrap.style, {
+            marginTop: "8px",
+            marginBottom: "10px",
+            padding: "10px 12px",
+            background: "var(--bg-input)",
+            border: "1px solid var(--moss)",
+            borderRadius: "4px",
+            fontSize: "12px",
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+        });
+
+        const sparkle = LS.el("span", null, top.source === "shipped" ? "✦" : top.source === "learned" ? "↺" : "✱");
+        sparkle.style.color = "var(--moss-bright)";
+        sparkle.style.fontSize = "14px";
+        wrap.appendChild(sparkle);
+
+        const text = LS.el("div");
+        text.style.flex = "1";
+        text.style.minWidth = "0";
+
+        const headline = LS.el("div");
+        headline.innerHTML = `Suggested <strong>${platformLabel}</strong> match: <strong style="color: var(--gold-bright);">${LS.escapeHTML(top.display_name)}</strong>`;
+        text.appendChild(headline);
+
+        if (top.display_path && top.display_path !== top.display_name) {
+            const path = LS.el("div");
+            path.style.fontSize = "11px";
+            path.style.color = "var(--ink-3)";
+            path.style.fontFamily = "var(--font-mono)";
+            path.style.marginTop = "2px";
+            path.textContent = top.display_path;
+            text.appendChild(path);
+        }
+
+        const sourceLabel = LS.el("div");
+        sourceLabel.style.fontSize = "10px";
+        sourceLabel.style.color = "var(--ink-3)";
+        sourceLabel.style.marginTop = "2px";
+        sourceLabel.textContent = top.source === "shipped"
+            ? "From shipped seed mappings"
+            : top.source === "learned"
+                ? "Learned from a previous category save"
+                : `Fuzzy match (confidence ${(top.confidence * 100).toFixed(0)}%)`;
+        text.appendChild(sourceLabel);
+
+        wrap.appendChild(text);
+
+        const apply = LS.el("button");
+        apply.textContent = "Use this";
+        Object.assign(apply.style, {
+            fontSize: "11px",
+            padding: "4px 10px",
+            background: "var(--moss-bright)",
+            color: "var(--bg-deep)",
+            border: "none",
+            borderRadius: "3px",
+            cursor: "pointer",
+            fontWeight: "600",
+        });
+        apply.addEventListener("click", () => onApply(top));
+        wrap.appendChild(apply);
+
+        host.appendChild(wrap);
+    }
+
+    function renderSearchResults(host, results, state, currentDisplay, onChange) {
         host.innerHTML = "";
         if (results.length === 0) {
             const empty = LS.el("div");
@@ -495,6 +1129,7 @@
                 state.reverb_category_uuid = result.uuid;
                 state.reverb_category_full_name = result.full_name;
                 renderCurrentReverbSelection(currentDisplay, state);
+                if (onChange) onChange();
             });
             actions.appendChild(setPrimary);
 
@@ -518,6 +1153,7 @@
                     state.reverb_subcategory_uuids.push(result.uuid);
                     state.reverb_subcategory_names.push(result.name);
                     renderCurrentReverbSelection(currentDisplay, state);
+                    if (onChange) onChange();
                 });
                 actions.appendChild(addSub);
             }

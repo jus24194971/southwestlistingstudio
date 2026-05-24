@@ -35,7 +35,6 @@ from listing_studio.core.schemas import (
     PlatformConnectionStatus,
     PostRequest,
     PostResponse,
-    ReverbTaxonomyMatch,
     TemplateCreate,
     TemplateOut,
     TemplateSummary,
@@ -306,6 +305,200 @@ async def connect_reverb(payload: dict) -> dict:
     return await _connect_with_api_key(Platform.REVERB, payload)
 
 
+@app.post("/api/settings/platforms/ebay/connect")
+async def connect_ebay(payload: dict) -> dict:
+    """Save eBay app credentials and verify them.
+
+    Body shape (all three required):
+        {
+            "client_id":     "...",  // App ID from the eBay dev dashboard
+            "client_secret": "...",  // Cert ID
+            "ru_name":       "..."   // Redirect User Name (associated with our
+                                      // localhost callback URL in eBay's dashboard)
+        }
+
+    Verifies the client_id/secret by fetching an app-only OAuth token.
+    The user OAuth dance (which authorizes Dad's actual seller account) is
+    a separate step: GET /api/ebay/oauth/start, callback at
+    /api/ebay/oauth/callback. Until that runs, the eBay connection is
+    "app-only" and lets us read the taxonomy but not post listings.
+    """
+    from listing_studio.core.credentials import (
+        clear_credentials,
+        store_credentials,
+    )
+    from listing_studio.platforms.ebay import EbayConnector
+
+    client_id = (payload.get("client_id") or "").strip()
+    client_secret = (payload.get("client_secret") or "").strip()
+    ru_name = (payload.get("ru_name") or "").strip()
+
+    if not client_id or not client_secret or not ru_name:
+        raise HTTPException(400, "All three fields (client_id, client_secret, ru_name) are required")
+
+    # Save first so the connector can read them during the test
+    try:
+        store_credentials(Platform.EBAY, {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "ru_name": ru_name,
+        })
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    connector = EbayConnector()
+    ok, label_or_error = await connector.test_connection()
+
+    if not ok:
+        clear_credentials(Platform.EBAY)
+        raise HTTPException(400, f"eBay rejected the credentials: {label_or_error}")
+
+    # Save with the label that the test produced; keep the three input fields.
+    store_credentials(Platform.EBAY, {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "ru_name": ru_name,
+        "account_label": label_or_error,
+    })
+    return {
+        "is_connected": True,
+        "account_label": label_or_error,
+        "has_user_token": False,
+        "next_step": "Authorize Dad's seller account via /api/ebay/oauth/start",
+    }
+
+
+@app.get("/api/settings/platforms/ebay/oauth-status")
+async def ebay_oauth_status() -> dict:
+    """Quick poll endpoint for the UI's "Waiting for callback..." spinner.
+
+    Returns whether a user token is currently stored (the OAuth callback
+    completed) and the account label so the UI can update without
+    reloading the whole platforms list.
+    """
+    from listing_studio.core.credentials import load_credentials
+    from listing_studio.platforms.ebay import EbayConnector
+
+    connector = EbayConnector()
+    stored = load_credentials(Platform.EBAY) or {}
+    return {
+        "app_connected": await connector.is_connected(),
+        "has_user_token": connector.has_user_token(),
+        "account_label": stored.get("account_label"),
+    }
+
+
+@app.get("/api/ebay/oauth/start")
+async def ebay_oauth_start() -> dict:
+    """Open the eBay consent screen in the user's default browser.
+
+    Constructs the authorize URL from the stored client_id + ru_name and
+    opens it via the OS browser handler. Returns immediately - the actual
+    redirect comes back to /api/ebay/oauth/callback later (potentially
+    minutes later if Dad takes his time on the consent screen).
+
+    Response shape:
+        {"opened": true, "url": "https://auth.ebay.com/oauth2/authorize?..."}
+    """
+    import webbrowser
+
+    from listing_studio.platforms.ebay import EbayConnector
+
+    connector = EbayConnector()
+    auth_url = connector.build_authorize_url()
+    if not auth_url:
+        raise HTTPException(400, "eBay app credentials not configured. Connect first.")
+
+    try:
+        opened = webbrowser.open(auth_url, new=2)  # new=2 means new tab if possible
+    except Exception as exc:  # noqa: BLE001 - webbrowser is platform-dependent
+        import logging
+        logging.getLogger(__name__).warning("Couldn't open browser for eBay OAuth: %s", exc)
+        opened = False
+
+    return {"opened": bool(opened), "url": auth_url}
+
+
+@app.get("/api/ebay/oauth/callback")
+async def ebay_oauth_callback(code: str | None = None, error: str | None = None):
+    """Handle eBay's redirect after Dad approves (or denies) the consent.
+
+    eBay redirects here with ``?code=XXXX`` (success) or ``?error=...``
+    (failure). On success we exchange the code for user tokens and store
+    them. Returns an HTML page that tells Dad to close the tab and switch
+    back to Listing Studio - the running app will see the stored tokens
+    on its next poll of /api/settings/platforms.
+
+    This endpoint exists because eBay's RuName-to-URL mapping is configured
+    in the dev dashboard to point at http://localhost:8731/api/ebay/oauth/callback.
+    """
+    from fastapi.responses import HTMLResponse
+
+    if error:
+        body = f"<h1>eBay authorization failed</h1><p>{error}</p>"
+        return HTMLResponse(_oauth_result_page(False, body), status_code=400)
+    if not code:
+        return HTMLResponse(_oauth_result_page(False, "<h1>Missing code parameter</h1>"), status_code=400)
+
+    from listing_studio.platforms.base import PostingError
+    from listing_studio.platforms.ebay import EbayConnector
+
+    connector = EbayConnector()
+    try:
+        merged = await connector.exchange_code_for_tokens(code)
+    except PostingError as exc:
+        return HTMLResponse(
+            _oauth_result_page(False, f"<h1>Couldn't exchange code</h1><p>{exc}</p>"),
+            status_code=400,
+        )
+
+    label = merged.get("account_label") or "eBay seller"
+    body = f"""
+        <h1>✓ Connected to eBay</h1>
+        <p>Authorized as <strong>{label}</strong>.</p>
+        <p>You can close this tab and return to Listing Studio - the app will pick up the new tokens automatically.</p>
+    """
+    return HTMLResponse(_oauth_result_page(True, body))
+
+
+def _oauth_result_page(ok: bool, body: str) -> str:
+    """Wrap the OAuth callback result in a styled HTML shell.
+
+    Kept self-contained (no external CSS) so the page works even if the
+    user's browser has lost connection to the embedded server.
+    """
+    accent = "#7a9d4f" if ok else "#c85a3c"
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Listing Studio - eBay OAuth</title>
+    <style>
+        body {{
+            background: #1B1813;
+            color: #d4cfc4;
+            font-family: -apple-system, system-ui, sans-serif;
+            margin: 0;
+            display: grid;
+            place-items: center;
+            min-height: 100vh;
+        }}
+        .card {{
+            background: #2a2520;
+            padding: 32px 40px;
+            border-radius: 6px;
+            border: 1px solid {accent};
+            max-width: 480px;
+        }}
+        h1 {{ color: {accent}; font-weight: 500; margin-top: 0; }}
+        p {{ line-height: 1.6; }}
+        code {{ background: #1B1813; padding: 2px 6px; border-radius: 3px; }}
+    </style>
+</head>
+<body><div class="card">{body}</div></body>
+</html>"""
+
+
 async def _connect_with_api_key(platform: Platform, payload: dict) -> dict:
     """Shared logic for platforms that use bearer-token auth.
 
@@ -380,6 +573,97 @@ async def test_platform_connection(platform_value: str) -> dict:
         return {"ok": False, "error": "Test not implemented for this platform yet"}
 
     ok, message = await connector.test_connection()
+    if ok:
+        return {"ok": True, "account_label": message}
+    return {"ok": False, "error": message}
+
+
+# ---------------------------------------------------------------------------
+# Photo host (image hosting for Reverb)
+# ---------------------------------------------------------------------------
+#
+# Reverb's API doesn't accept binary photo uploads, so we host them on an
+# external service (currently ImgBB) and pass URLs to Reverb. These endpoints
+# manage the host's stored API key, mirroring the platform-connection pattern
+# above but using the "service" namespace in the keyring rather than the
+# Platform enum.
+
+
+@app.get("/api/settings/photo-host")
+async def get_photo_host_status() -> dict:
+    """Return whether a photo host is configured and which one.
+
+    Response shape: {"connected": bool, "service_name": str | null,
+                     "display_name": str | null}
+    """
+    from listing_studio.core.photo_host import get_status
+    return get_status()
+
+
+@app.post("/api/settings/photo-host/imgbb/connect")
+async def connect_imgbb(payload: dict) -> dict:
+    """Validate an ImgBB API key and save it on success.
+
+    Body: ``{"api_key": "<the key>"}``
+
+    Tests the key by performing a tiny upload; saves it in the OS keyring
+    only if the test succeeds. Pattern matches the platform connect flow.
+    """
+    from listing_studio.core.credentials import (
+        clear_service_credentials,
+        store_service_credentials,
+    )
+    from listing_studio.core.photo_host import IMGBB_SERVICE_NAME, ImgBBHost
+
+    api_key = payload.get("api_key", "").strip()
+    if not api_key:
+        raise HTTPException(400, "Missing api_key")
+
+    # Save first so the ImgBBHost factory can find it during the test.
+    # Cleared if the test fails so we never leave a bad key sitting around.
+    try:
+        store_service_credentials(IMGBB_SERVICE_NAME, {"api_key": api_key})
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    host = ImgBBHost(api_key=api_key)
+    ok, label_or_error = await host.test_connection()
+
+    if not ok:
+        clear_service_credentials(IMGBB_SERVICE_NAME)
+        raise HTTPException(400, f"ImgBB rejected the key: {label_or_error}")
+
+    store_service_credentials(IMGBB_SERVICE_NAME, {
+        "api_key": api_key,
+        "account_label": label_or_error,
+    })
+    return {"is_connected": True, "account_label": label_or_error}
+
+
+@app.post("/api/settings/photo-host/disconnect", status_code=204)
+async def disconnect_photo_host() -> None:
+    """Remove the configured photo host's credentials."""
+    from listing_studio.core.credentials import clear_service_credentials
+    from listing_studio.core.photo_host import IMGBB_SERVICE_NAME
+    # Only one host today, so we always clear ImgBB. When we add Cloudinary
+    # etc, this becomes "clear whichever is configured".
+    clear_service_credentials(IMGBB_SERVICE_NAME)
+
+
+@app.post("/api/settings/photo-host/test")
+async def test_photo_host() -> dict:
+    """Verify the stored photo-host credentials still work.
+
+    Returns {"ok": bool, "account_label" | "error": str}, matching the
+    platform test endpoint's shape so the UI can use the same handler.
+    """
+    from listing_studio.core.photo_host import get_configured_host
+
+    host = get_configured_host()
+    if host is None:
+        return {"ok": False, "error": "No photo host configured"}
+
+    ok, message = await host.test_connection()
     if ok:
         return {"ok": True, "account_label": message}
     return {"ok": False, "error": message}
@@ -482,7 +766,6 @@ async def install_update_endpoint() -> dict:
         _install_state["bytes_total"] = total
 
     def _do_install():
-        import threading
 
         try:
             install_root = install_update(release, progress_callback=progress_callback)
@@ -563,9 +846,10 @@ async def add_photos_to_template(template_id: int, payload: dict) -> dict:
     All paths must pass NAS security validation. Any path that's not under
     a configured NAS root will cause the entire request to fail (400).
     """
+    from datetime import datetime as _datetime
+
     from listing_studio.core.models import Tag, Template, TemplatePhoto, TemplateTag
     from listing_studio.core.nas import PathOutsideRoots, validate_path
-    from datetime import datetime as _datetime
 
     paths = payload.get("paths", [])
     tags = payload.get("tags", [])
@@ -703,8 +987,9 @@ async def list_categories() -> list[CategoryOut]:
     Sorted alphabetically by name. Each category includes ``template_count``
     so the library sidebar can show "Tuners (12)" style labels.
     """
-    from listing_studio.core.models import Category, Template
     from sqlalchemy import func as sqlfunc
+
+    from listing_studio.core.models import Category, Template
 
     out: list[CategoryOut] = []
     with session_scope() as session:
@@ -751,6 +1036,12 @@ async def create_category(payload: CategoryCreate) -> CategoryOut:
             reverb_category_full_name=payload.reverb_category_full_name,
             reverb_subcategory_uuids=payload.reverb_subcategory_uuids,
             reverb_subcategory_names=payload.reverb_subcategory_names,
+            ebay_category_id=payload.ebay_category_id,
+            ebay_category_name=payload.ebay_category_name,
+            ebay_category_path=payload.ebay_category_path,
+            ebay_leaf=payload.ebay_leaf,
+            squarespace_store_page_id=payload.squarespace_store_page_id,
+            squarespace_store_page_name=payload.squarespace_store_page_name,
             platform_config={},
             default_condition=payload.default_condition,
             default_weight_oz=payload.default_weight_oz,
@@ -758,6 +1049,13 @@ async def create_category(payload: CategoryCreate) -> CategoryOut:
         )
         session.add(cat)
         session.flush()
+
+        # Learn cross-platform mappings + bump recent-used for any platforms
+        # this category was created against. Safe to call regardless of which
+        # platforms have data populated.
+        from listing_studio.core import category_suggest
+        category_suggest.record_category_save(session, cat)
+
         result = CategoryOut.model_validate(cat)
         result.template_count = 0
         return result
@@ -766,8 +1064,9 @@ async def create_category(payload: CategoryCreate) -> CategoryOut:
 @app.patch("/api/categories/{category_id}")
 async def update_category(category_id: int, payload: CategoryUpdate) -> CategoryOut:
     """Update an existing category."""
-    from listing_studio.core.models import Category, Template
     from sqlalchemy import func as sqlfunc
+
+    from listing_studio.core.models import Category, Template
 
     with session_scope() as session:
         cat = session.get(Category, category_id)
@@ -793,6 +1092,12 @@ async def update_category(category_id: int, payload: CategoryUpdate) -> Category
 
         session.flush()
 
+        # Learn cross-platform mappings + bump recent-used after any update
+        # that may have changed the platform fields. record_category_save
+        # is idempotent on existing rows, so no harm calling it every time.
+        from listing_studio.core import category_suggest
+        category_suggest.record_category_save(session, cat)
+
         # Count templates
         count = session.execute(
             select(sqlfunc.count(Template.id))
@@ -807,8 +1112,9 @@ async def update_category(category_id: int, payload: CategoryUpdate) -> Category
 @app.delete("/api/categories/{category_id}", status_code=204)
 async def delete_category(category_id: int) -> None:
     """Delete a category. Fails if any templates still reference it."""
-    from listing_studio.core.models import Category, Template
     from sqlalchemy import func as sqlfunc
+
+    from listing_studio.core.models import Category, Template
 
     with session_scope() as session:
         cat = session.get(Category, category_id)
@@ -857,6 +1163,166 @@ async def search_reverb_taxonomy(q: str = "", limit: int = 30) -> list[dict]:
     return matches
 
 
+@app.get("/api/platforms/ebay/taxonomy/search")
+async def search_ebay_taxonomy(q: str = "", limit: int = 30) -> list[dict]:
+    """Search eBay's category taxonomy.
+
+    Returns matches with category_id (int), name, full_name, is_leaf (bool).
+    eBay only allows listings on LEAF categories - the UI should warn the
+    user when picking a non-leaf result.
+
+    Empty query returns the first ``limit`` leaves (more useful than mid-tree
+    nodes when populating a category picker).
+    """
+    from listing_studio.platforms.ebay import EbayConnector
+
+    connector = EbayConnector()
+    if not await connector.is_connected():
+        raise HTTPException(
+            400,
+            "eBay not connected. Connect it in Settings before searching the taxonomy.",
+        )
+
+    matches = await connector.search_taxonomy(q, limit=limit)
+    return matches
+
+
+@app.get("/api/platforms/squarespace/store-pages")
+async def get_squarespace_store_pages() -> list[dict]:
+    """Return the Squarespace store pages discoverable from existing products.
+
+    Squarespace's API doesn't expose a direct "list commerce pages" endpoint,
+    so this scans products and returns the unique storePageIds observed.
+    Empty list if not connected or no products exist yet (Dad can fall back
+    to entering a page ID manually in that case).
+    """
+    from listing_studio.platforms.squarespace import SquarespaceConnector
+
+    connector = SquarespaceConnector()
+    if not await connector.is_connected():
+        return []
+
+    return await connector.fetch_store_pages()
+
+
+# Cross-platform category suggestions + recent-used
+
+
+@app.get("/api/categories/suggestions")
+async def get_category_suggestions(
+    from_platform: str,
+    from_id: str,
+    to_platform: str,
+) -> list[dict]:
+    """Suggest target-platform categories matching a source category.
+
+    Two-layer logic (the engine handles layer 1, this endpoint handles
+    layer 2 because it requires an async call to the target connector):
+
+      1. **Direct mappings** in category_mappings (shipped + learned).
+      2. **Fuzzy name match** against the target platform's cached taxonomy,
+         using the source category's display name as the query.
+
+    Query params:
+      from_platform: "reverb" | "ebay" | "squarespace"
+      from_id:       The source platform's external_id (UUID for Reverb, etc.)
+      to_platform:   The platform we want suggestions for.
+
+    Returns a list of CategorySuggestion-shaped dicts ordered by confidence.
+    """
+    from listing_studio.core import category_suggest
+    from listing_studio.core.models import CategoryUsage, Platform
+
+    try:
+        src = Platform(from_platform)
+        dst = Platform(to_platform)
+    except ValueError as exc:
+        raise HTTPException(400, f"Unknown platform: {exc}") from exc
+
+    # Layer 1: direct mappings (in-DB lookup)
+    with session_scope() as session:
+        direct = category_suggest.suggest_for(
+            session,
+            from_platform=src,
+            from_external_id=from_id,
+            to_platform=dst,
+        )
+        if direct:
+            return direct
+
+        # Pull the source category's display name to use as a fuzzy hint
+        usage = session.execute(
+            select(CategoryUsage).where(
+                CategoryUsage.platform == src,
+                CategoryUsage.external_id == from_id,
+            )
+        ).scalar_one_or_none()
+        hint = usage.display_name if usage else None
+
+    # Layer 2: fuzzy match against the target platform's taxonomy.
+    # Done outside the session because the connector calls are async/network.
+    if not hint:
+        return []
+
+    if dst == Platform.REVERB:
+        from listing_studio.platforms.reverb import ReverbConnector
+        connector_r = ReverbConnector()
+        if not await connector_r.is_connected():
+            return []
+        matches = await connector_r.search_taxonomy(hint, limit=5)
+        return [
+            {
+                "platform": dst.value,
+                "external_id": m["uuid"],
+                "display_name": m["name"],
+                "display_path": m.get("full_name") or m["name"],
+                "confidence": 0.4,
+                "source": "fuzzy",
+            }
+            for m in matches
+        ]
+
+    if dst == Platform.EBAY:
+        from listing_studio.platforms.ebay import EbayConnector
+        connector_e = EbayConnector()
+        if not await connector_e.is_connected():
+            return []
+        matches = await connector_e.search_taxonomy(hint, limit=5)
+        return [
+            {
+                "platform": dst.value,
+                "external_id": str(m["category_id"]),
+                "display_name": m["name"],
+                "display_path": m.get("full_name") or m["name"],
+                "confidence": 0.4 if m.get("is_leaf") else 0.2,
+                "source": "fuzzy",
+            }
+            for m in matches
+        ]
+
+    # Squarespace has no enforced taxonomy to fuzzy-match against
+    return []
+
+
+@app.get("/api/categories/usage/recent")
+async def get_recent_category_usage(platform: str, limit: int = 8) -> list[dict]:
+    """Return the most recently used categories on a given platform.
+
+    Feeds the "Recent" section above search results in each platform's
+    category picker. Capped at ``limit`` rows (default 8).
+    """
+    from listing_studio.core import category_suggest
+    from listing_studio.core.models import Platform
+
+    try:
+        plat = Platform(platform)
+    except ValueError as exc:
+        raise HTTPException(400, f"Unknown platform: {platform}") from exc
+
+    with session_scope() as session:
+        return category_suggest.get_recent(session, plat, limit=limit)
+
+
 # ---------------------------------------------------------------------------
 # NAS photo browsing
 # ---------------------------------------------------------------------------
@@ -867,6 +1333,48 @@ async def get_nas_roots() -> list[dict]:
     """Return the configured NAS roots with reachability flags."""
     from listing_studio.core.nas import get_roots
     return get_roots()
+
+
+@app.post("/api/photos/pick-local")
+async def pick_local_photos_endpoint() -> dict:
+    """Open the OS native file dialog and return selected photo paths.
+
+    Failover for when the NAS isn't reachable, but also useful when Dad has
+    a one-off photo on his desktop he wants to use. The dialog is blocking,
+    so we run it on a worker thread to avoid stalling FastAPI's event loop.
+
+    Each returned file's parent directory is registered with the NAS module's
+    in-memory allowlist, so the existing thumbnail/image/attach endpoints
+    accept these paths the same way they accept NAS paths. The allowlist
+    is session-scoped (cleared on restart) and only ever gets entries from
+    this endpoint - paths from clients can't bypass NAS validation.
+
+    Returns:
+        {"paths": ["C:/Users/.../photo1.jpg", ...]} - empty if cancelled.
+    """
+    import asyncio
+    import logging
+
+    from listing_studio.core.local_picker import pick_local_photos
+    from listing_studio.core.nas import PathOutsideRoots, register_local_file
+
+    log = logging.getLogger(__name__)
+
+    # The dialog blocks. Push to a thread so async handlers above us don't
+    # stall while the user thinks about which photos to pick.
+    paths = await asyncio.to_thread(pick_local_photos)
+
+    registered: list[str] = []
+    for path in paths:
+        try:
+            resolved = register_local_file(path)
+            registered.append(str(resolved))
+        except PathOutsideRoots as exc:
+            # register_local_file rejects nonexistent files. Skip and log -
+            # the dialog occasionally returns ghosts on some Windows shells.
+            log.warning("Skipping unregisterable local path %s: %s", path, exc)
+
+    return {"paths": registered}
 
 
 @app.get("/api/nas/list")
@@ -959,10 +1467,19 @@ async def get_reverb_shipping_profiles() -> list[dict]:
 async def post_template_to_reverb(template_id: int, payload: dict | None = None) -> dict:
     """Create a draft Reverb listing from a template.
 
+    Photo handling:
+        Reverb wants public URLs, not binary uploads. If a photo host is
+        configured (see /api/settings/photo-host), we normalize each NAS
+        photo (EXIF-rotate, downscale, JPEG re-encode), upload it there, and
+        pass the resulting URLs to Reverb. If no host is configured, the
+        draft is created without photos and the UI prompts Dad to drag
+        them into the Reverb web UI manually.
+
     Body (all optional):
         {
             "shipping_profile_id": "1234",
-            "upload_photos": true     // default: true; set false to skip photos
+            "skip_photos": false   // force the no-photos manual-drag path
+                                   // even if a host is configured
         }
 
     Returns:
@@ -970,17 +1487,27 @@ async def post_template_to_reverb(template_id: int, payload: dict | None = None)
             "listing_id": "...",
             "state": "draft",
             "url": "https://reverb.com/...",
-            "photo_results": {"uploaded": 3, "failed": 1, "errors": [...]}
+            "photo_results": {
+                "uploaded": 3,
+                "failed": 1,
+                "errors": [...],
+                "host_configured": true,    // whether auto-upload was attempted
+                "host_display_name": "ImgBB" | null,
+            }
         }
     """
-    from listing_studio.core.models import Template, Preference
-    from listing_studio.platforms.reverb import ReverbConnector
+    from listing_studio.core.models import Preference, Template
+    from listing_studio.core.photo_host import get_configured_host
+    from listing_studio.core.photo_processor import (
+        NormalizeError,
+        normalize_for_upload,
+    )
     from listing_studio.platforms.base import PostingError
-    from pathlib import Path as PathLib
+    from listing_studio.platforms.reverb import ReverbConnector
 
     payload = payload or {}
     shipping_profile_id = payload.get("shipping_profile_id")
-    upload_photos = payload.get("upload_photos", True)
+    skip_photos = bool(payload.get("skip_photos", False))
 
     with session_scope() as session:
         template = session.get(Template, template_id)
@@ -1046,9 +1573,58 @@ async def post_template_to_reverb(template_id: int, payload: dict | None = None)
     for k, v in template_copy_data.items():
         setattr(t, k, v)
 
+    # Photo pre-upload: normalize each NAS photo and ship it to the configured
+    # image host. We do this BEFORE create_draft so we can pass the URLs into
+    # the create payload (Reverb's API has no working way to attach photos
+    # after-the-fact via binary upload; it only accepts URLs).
+    photo_results: dict = {
+        "uploaded": 0,
+        "failed": 0,
+        "errors": [],
+        "host_configured": False,
+        "host_display_name": None,
+    }
+    photo_urls: list[str] = []
+
+    host = None if skip_photos else get_configured_host()
+    if host is not None:
+        photo_results["host_configured"] = True
+        photo_results["host_display_name"] = host.display_name
+
+    if host is not None and photo_paths:
+        from pathlib import Path as PathLib
+
+        from listing_studio.core.photo_host import PhotoHostError
+
+        for idx, photo_path_str in enumerate(photo_paths):
+            photo_path = PathLib(photo_path_str)
+            display_name = photo_path.name
+            try:
+                normalized = normalize_for_upload(photo_path)
+                # Prefix with sort order so if Dad later compares the host's
+                # filenames they match his picker order.
+                upload_filename = f"{idx + 1:02d}_{normalized.filename}"
+                url = await host.upload(normalized.data, upload_filename)
+                photo_urls.append(url)
+                photo_results["uploaded"] += 1
+            except NormalizeError as exc:
+                photo_results["failed"] += 1
+                photo_results["errors"].append(f"{display_name}: {exc}")
+            except PhotoHostError as exc:
+                photo_results["failed"] += 1
+                photo_results["errors"].append(f"{display_name}: {exc}")
+            except Exception as exc:  # pragma: no cover - defensive
+                photo_results["failed"] += 1
+                photo_results["errors"].append(
+                    f"{display_name}: {type(exc).__name__}: {exc}"
+                )
+
     try:
         result = await connector.create_draft(
-            t, listing_tail=listing_tail, shipping_profile_id=shipping_profile_id,
+            t,
+            listing_tail=listing_tail,
+            shipping_profile_id=shipping_profile_id,
+            photo_urls=photo_urls or None,
         )
     except PostingError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -1056,25 +1632,6 @@ async def post_template_to_reverb(template_id: int, payload: dict | None = None)
     listing_id = result.get("id")
     if not listing_id:
         raise HTTPException(500, "Reverb didn't return a listing ID")
-
-    # Upload photos if requested
-    photo_results = {"uploaded": 0, "failed": 0, "errors": []}
-    if upload_photos and photo_paths:
-        for photo_path_str in photo_paths:
-            photo_path = PathLib(photo_path_str)
-            try:
-                await connector.upload_photo(str(listing_id), photo_path)
-                photo_results["uploaded"] += 1
-            except PostingError as exc:
-                photo_results["failed"] += 1
-                photo_results["errors"].append(
-                    f"{photo_path.name}: {exc}"
-                )
-            except Exception as exc:  # pragma: no cover - defensive
-                photo_results["failed"] += 1
-                photo_results["errors"].append(
-                    f"{photo_path.name}: {type(exc).__name__}: {exc}"
-                )
 
     return {
         "listing_id": str(listing_id),
@@ -1101,6 +1658,7 @@ async def open_template_photo_folder(template_id: int) -> dict:
     import os
     import subprocess
     import sys
+
     from listing_studio.core.models import Template
 
     with session_scope() as session:

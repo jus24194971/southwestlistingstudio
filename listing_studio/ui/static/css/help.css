@@ -1,0 +1,267 @@
+/* Help view - page header (matching Settings/History) on top, two-pane body
+   below. Left pane: TOC. Right pane: rendered content for the active section. */
+
+#help-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg-deep);
+}
+
+.help-page-header {
+    /* The .page-header class from base/settings.css already styles the
+       horizontal layout (title left, button right). We just need to make
+       sure it doesn't shrink when the body below scrolls. */
+    flex: 0 0 auto;
+}
+
+.help-body {
+    flex: 1 1 auto;
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    overflow: hidden;
+    min-height: 0;  /* lets the children's overflow-y actually scroll */
+}
+
+.help-sidebar {
+    background: var(--bg-panel);
+    border-right: 1px solid var(--line);
+    overflow-y: auto;
+    padding: 24px 0;
+}
+
+.help-sidebar-header {
+    padding: 0 20px 16px 20px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 12px;
+}
+
+.help-sidebar-title {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 20px;
+    color: var(--gold-bright);
+    margin: 0 0 4px 0;
+}
+
+.help-sidebar-sub {
+    font-size: 11px;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.help-toc {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.help-toc-item {
+    padding: 9px 20px;
+    font-size: 13px;
+    color: var(--ink-2);
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: background 0.1s, border-color 0.1s, color 0.1s;
+}
+
+.help-toc-item:hover {
+    background: var(--bg-input);
+    color: var(--ink);
+}
+
+.help-toc-item.active {
+    background: var(--bg-input);
+    border-left-color: var(--gold-bright);
+    color: var(--gold-bright);
+    font-weight: 500;
+}
+
+.help-toc-icon {
+    display: inline-block;
+    width: 20px;
+    margin-right: 6px;
+    text-align: center;
+}
+
+.help-content {
+    overflow-y: auto;
+    padding: 36px 48px;
+    max-width: 760px;
+    line-height: 1.65;
+}
+
+.help-content h1 {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 32px;
+    color: var(--gold-bright);
+    margin: 0 0 8px 0;
+}
+
+.help-content > .help-section-sub {
+    color: var(--ink-3);
+    font-size: 13px;
+    margin-bottom: 28px;
+}
+
+.help-content h2 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--ink);
+    margin: 28px 0 10px 0;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--line);
+}
+
+.help-content h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--gold-bright);
+    margin: 20px 0 8px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.help-content p {
+    color: var(--ink-2);
+    margin: 0 0 12px 0;
+    font-size: 14px;
+}
+
+.help-content ol,
+.help-content ul {
+    margin: 8px 0 14px 0;
+    padding-left: 24px;
+    color: var(--ink-2);
+    font-size: 14px;
+}
+
+.help-content li {
+    margin-bottom: 6px;
+}
+
+.help-content strong {
+    color: var(--ink);
+}
+
+.help-content code,
+.help-content .kbd {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    background: var(--bg-input);
+    padding: 1px 6px;
+    border-radius: 3px;
+    color: var(--gold-bright);
+}
+
+/* "Callout" boxes for tips, warnings, troubleshooting */
+
+.help-callout {
+    margin: 16px 0;
+    padding: 14px 16px;
+    border-radius: 4px;
+    background: var(--bg-input);
+    border-left: 3px solid var(--gold);
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--ink-2);
+}
+
+.help-callout.tip {
+    border-left-color: var(--moss-bright);
+}
+
+.help-callout.warn {
+    border-left-color: var(--rust-bright);
+}
+
+.help-callout-label {
+    display: inline-block;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+    color: var(--gold-bright);
+    margin-right: 8px;
+}
+
+.help-callout.tip .help-callout-label {
+    color: var(--moss-bright);
+}
+
+.help-callout.warn .help-callout-label {
+    color: var(--rust-bright);
+}
+
+/* Step-by-step lists get a numbered, prominent style */
+
+.help-steps {
+    list-style: none;
+    counter-reset: help-step;
+    padding-left: 0;
+    margin: 16px 0;
+}
+
+.help-steps > li {
+    counter-increment: help-step;
+    position: relative;
+    padding-left: 40px;
+    margin-bottom: 14px;
+}
+
+.help-steps > li::before {
+    content: counter(help-step);
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 26px;
+    height: 26px;
+    background: var(--gold-bright);
+    color: var(--bg-deep);
+    font-weight: 700;
+    font-size: 13px;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+}
+
+/* "Q & A" troubleshooting style for the troubleshooting section */
+
+.help-qa {
+    margin-bottom: 18px;
+    padding: 14px 16px;
+    background: var(--bg-panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+}
+
+.help-qa-q {
+    font-weight: 600;
+    color: var(--ink);
+    font-size: 14px;
+    margin-bottom: 6px;
+}
+
+.help-qa-q::before {
+    content: "Q. ";
+    color: var(--gold-bright);
+    font-family: var(--font-display);
+    font-style: italic;
+}
+
+.help-qa-a {
+    color: var(--ink-2);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.help-qa-a::before {
+    content: "A. ";
+    color: var(--moss-bright);
+    font-weight: 600;
+    margin-right: 4px;
+}

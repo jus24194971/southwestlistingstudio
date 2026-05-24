@@ -575,14 +575,14 @@
         btn.textContent = "Creating draft…";
 
         try {
-            // Skip photo upload until we have a working hosted-image path.
-            // Reverb's API needs publicly-accessible image URLs, not binary
-            // uploads. For now we create the draft without photos, and Dad
-            // adds them manually via the Reverb UI link in the result modal.
+            // Backend decides whether to auto-upload photos based on whether
+            // a photo host (ImgBB) is configured in Settings. If no host is
+            // set up, the draft is created without photos and the result
+            // modal falls back to the manual "drag photos into Reverb" flow.
             const result = await LS.api(
                 "POST",
                 `/api/templates/${LS.state.currentTemplate.id}/post-to-reverb`,
-                { upload_photos: false },
+                {},
             );
 
             showReverbDraftResult(result);
@@ -616,70 +616,38 @@
         info.innerHTML = `Listing ID: <span style="font-family: var(--font-mono); color: var(--gold-bright);">${result.listing_id}</span> · State: <strong>${stateLabel}</strong>`;
         card.appendChild(info);
 
-        // Next-step callout: photos must be added manually for now
+        // Photo-handling next step depends on whether a host was configured.
+        // Host configured → photos were auto-uploaded (with possible partials).
+        // No host        → draft has no photos; fall back to manual drag-drop.
+        const photoResults = result.photo_results || {};
+        const hostConfigured = !!photoResults.host_configured;
+        const uploaded = photoResults.uploaded || 0;
+        const failed = photoResults.failed || 0;
+        const errors = photoResults.errors || [];
+
         const nextStep = LS.el("div");
+        const stepBorderColor = hostConfigured && failed === 0 && uploaded > 0
+            ? "var(--moss-bright)" : "var(--gold)";
         Object.assign(nextStep.style, {
             marginTop: "16px",
             padding: "14px 16px",
             background: "var(--bg-input)",
-            border: "1px solid var(--gold)",
+            border: `1px solid ${stepBorderColor}`,
             borderRadius: "4px",
             fontSize: "13px",
             lineHeight: "1.5",
         });
-        nextStep.innerHTML = `
-            <div style="font-weight: 600; color: var(--gold-bright); margin-bottom: 6px;">Next: add photos on Reverb</div>
-            <div style="color: var(--ink-2); margin-bottom: 10px;">
-                The draft is ready with all the listing details, but Reverb's API doesn't accept photo uploads directly.
-                Open the draft on Reverb to drag in photos, then publish.
-            </div>
-        `;
-        if (result.url) {
-            const openBtn = LS.el("button");
-            openBtn.textContent = "→ Open Draft + Photos Folder";
-            openBtn.title = "Opens the draft on Reverb in your browser AND opens the photos folder in Explorer for drag-and-drop";
-            Object.assign(openBtn.style, {
-                display: "inline-block",
-                padding: "8px 14px",
-                background: "var(--gold-bright)",
-                color: "var(--bg-deep)",
-                border: "none",
-                borderRadius: "4px",
-                fontWeight: "600",
-                fontSize: "13px",
-                cursor: "pointer",
-            });
-            openBtn.addEventListener("click", async () => {
-                // Open the Reverb draft in a new tab first
-                window.open(result.url, "_blank");
 
-                // Then ask the backend to open the photo folder. Don't await
-                // the alert if it fails - the draft tab already opened, which
-                // is the more important part.
-                try {
-                    await LS.api(
-                        "POST",
-                        `/api/templates/${LS.state.currentTemplate.id}/open-photo-folder`,
-                    );
-                } catch (err) {
-                    console.warn("Couldn't open photo folder:", err);
-                    // Soft-fail: show a small notice but don't block
-                    const notice = LS.el("div");
-                    notice.style.marginTop = "8px";
-                    notice.style.fontSize = "11px";
-                    notice.style.color = "var(--rust-bright)";
-                    notice.textContent = `Couldn't open photo folder: ${err.message}`;
-                    nextStep.appendChild(notice);
-                }
-            });
-            nextStep.appendChild(openBtn);
-
-            // Backup plain link in case the button fails (e.g. popup blocker)
-            const fallback = LS.el("div");
-            fallback.style.marginTop = "8px";
-            fallback.style.fontSize = "11px";
-            fallback.innerHTML = `<a href="${result.url}" target="_blank" style="color: var(--ink-3);">or open just the draft →</a>`;
-            nextStep.appendChild(fallback);
+        if (hostConfigured && uploaded > 0 && failed === 0) {
+            // Happy path: everything uploaded automatically via the host
+            renderPhotoHostHappyPath(nextStep, result, uploaded, photoResults.host_display_name);
+        } else if (hostConfigured) {
+            // Partial or total failure on the host side. Some may have uploaded;
+            // surface what worked and what didn't, plus the manual fallback.
+            renderPhotoHostPartial(nextStep, result, photoResults);
+        } else {
+            // No host configured: the legacy manual drag-and-drop workflow.
+            renderManualDragDrop(nextStep, result);
         }
         card.appendChild(nextStep);
 
@@ -701,7 +669,155 @@
         backdrop.addEventListener("click", e => {
             if (e.target === backdrop) backdrop.remove();
         });
+        LS.attachModalCloseButton(card, backdrop);
         document.body.appendChild(backdrop);
+    }
+
+    function renderPhotoHostHappyPath(container, result, uploaded, hostName) {
+        container.innerHTML = `
+            <div style="font-weight: 600; color: var(--moss-bright); margin-bottom: 6px;">
+                ✓ ${uploaded} photo${uploaded === 1 ? "" : "s"} uploaded via ${hostName || "image host"}
+            </div>
+            <div style="color: var(--ink-2); margin-bottom: 10px;">
+                Reverb is fetching them now. Open the draft to confirm and publish.
+            </div>
+        `;
+        if (result.url) {
+            container.appendChild(buildOpenDraftButton(result.url, "→ Open Draft on Reverb"));
+        }
+    }
+
+    function renderPhotoHostPartial(container, result, photoResults) {
+        const uploaded = photoResults.uploaded || 0;
+        const failed = photoResults.failed || 0;
+        const errors = photoResults.errors || [];
+        const hostName = photoResults.host_display_name || "image host";
+
+        const headline = uploaded > 0
+            ? `Photo upload partial: ${uploaded} succeeded, ${failed} failed`
+            : `Photo upload failed (${failed} ${failed === 1 ? "photo" : "photos"})`;
+
+        const headlineEl = LS.el("div");
+        headlineEl.style.fontWeight = "600";
+        headlineEl.style.color = "var(--gold-bright)";
+        headlineEl.style.marginBottom = "6px";
+        headlineEl.textContent = headline;
+        container.appendChild(headlineEl);
+
+        const explainer = LS.el("div");
+        explainer.style.color = "var(--ink-2)";
+        explainer.style.marginBottom = "10px";
+        explainer.innerHTML = uploaded > 0
+            ? `The draft has ${uploaded} photo${uploaded === 1 ? "" : "s"} attached. Open it to add the rest by hand.`
+            : `Couldn't upload any photos to ${hostName}. Open the draft and add photos manually.`;
+        container.appendChild(explainer);
+
+        if (errors.length > 0) {
+            const details = LS.el("details");
+            details.style.marginBottom = "10px";
+            const summary = LS.el("summary");
+            summary.style.cursor = "pointer";
+            summary.style.fontSize = "12px";
+            summary.style.color = "var(--ink-3)";
+            summary.textContent = `Show ${errors.length} error${errors.length === 1 ? "" : "s"}`;
+            details.appendChild(summary);
+
+            const list = LS.el("ul");
+            list.style.marginTop = "8px";
+            list.style.paddingLeft = "20px";
+            list.style.fontSize = "11px";
+            list.style.color = "var(--rust-bright)";
+            list.style.fontFamily = "var(--font-mono)";
+            for (const errLine of errors) {
+                const li = LS.el("li");
+                li.style.marginBottom = "4px";
+                li.textContent = errLine;
+                list.appendChild(li);
+            }
+            details.appendChild(list);
+            container.appendChild(details);
+        }
+
+        if (result.url) {
+            container.appendChild(buildOpenDraftPlusFolderButton(result.url));
+        }
+    }
+
+    function renderManualDragDrop(container, result) {
+        container.innerHTML = `
+            <div style="font-weight: 600; color: var(--gold-bright); margin-bottom: 6px;">Next: add photos on Reverb</div>
+            <div style="color: var(--ink-2); margin-bottom: 10px;">
+                The draft is ready with all the listing details. To auto-upload photos,
+                connect an image host in <strong>Settings → Reverb photo hosting</strong>.
+                Otherwise open the draft below and drag photos in from the Explorer window.
+            </div>
+        `;
+        if (result.url) {
+            container.appendChild(buildOpenDraftPlusFolderButton(result.url));
+        }
+    }
+
+    function buildOpenDraftButton(url, label) {
+        const btn = LS.el("button");
+        btn.textContent = label;
+        Object.assign(btn.style, {
+            display: "inline-block",
+            padding: "8px 14px",
+            background: "var(--gold-bright)",
+            color: "var(--bg-deep)",
+            border: "none",
+            borderRadius: "4px",
+            fontWeight: "600",
+            fontSize: "13px",
+            cursor: "pointer",
+        });
+        btn.addEventListener("click", () => window.open(url, "_blank"));
+        return btn;
+    }
+
+    function buildOpenDraftPlusFolderButton(url) {
+        const wrap = LS.el("div");
+        const btn = LS.el("button");
+        btn.textContent = "→ Open Draft + Photos Folder";
+        btn.title = "Opens the draft on Reverb AND the photos folder in Explorer for drag-and-drop";
+        Object.assign(btn.style, {
+            display: "inline-block",
+            padding: "8px 14px",
+            background: "var(--gold-bright)",
+            color: "var(--bg-deep)",
+            border: "none",
+            borderRadius: "4px",
+            fontWeight: "600",
+            fontSize: "13px",
+            cursor: "pointer",
+        });
+        btn.addEventListener("click", async () => {
+            window.open(url, "_blank");
+            try {
+                await LS.api(
+                    "POST",
+                    `/api/templates/${LS.state.currentTemplate.id}/open-photo-folder`,
+                );
+            } catch (err) {
+                console.warn("Couldn't open photo folder:", err);
+                const notice = LS.el("div");
+                notice.style.marginTop = "8px";
+                notice.style.fontSize = "11px";
+                notice.style.color = "var(--rust-bright)";
+                notice.textContent = `Couldn't open photo folder: ${err.message}`;
+                wrap.appendChild(notice);
+            }
+        });
+        wrap.appendChild(btn);
+
+        // Backup plain link in case the button can't open the folder
+        const fallback = LS.el("div");
+        fallback.style.marginTop = "8px";
+        fallback.style.fontSize = "11px";
+        fallback.innerHTML = `<a href="${url}" target="_blank" style="color: var(--ink-3);">or open just the draft →</a>`;
+        wrap.appendChild(fallback);
+
+        return wrap;
     }
 
     LS.postListing = async function () {
