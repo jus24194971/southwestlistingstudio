@@ -38,8 +38,22 @@ body.font-scale-xlarge .chassis {
     /* chassis is normally pinned at 100vh via grid; when zoomed, the
        grid rows need to grow with their content instead of squeezing */
     height: auto;
-    min-height: 100vh;
     grid-template-rows: auto 1fr auto;
+}
+
+/* CSS zoom keeps layout calculations the same (100vw stays = viewport
+   width in layout space) but renders visually at zoom * size. The
+   chassis at width:100vw rendered at zoom 1.4x becomes 1.4 viewports
+   wide visually - the right edge falls outside the window. Compensate
+   by shrinking the chassis pre-zoom by 1/factor so the rendered output
+   matches the actual viewport. Same trick for min-height vs vh. */
+body.font-scale-large .chassis {
+    width: calc(100vw / 1.20);
+    min-height: calc(100vh / 1.20);
+}
+body.font-scale-xlarge .chassis {
+    width: calc(100vw / 1.40);
+    min-height: calc(100vh / 1.40);
 }
 
 body.font-scale-large .toolbar,
@@ -58,6 +72,25 @@ body.font-scale-xlarge .statusbar {
     position: sticky;
     bottom: 0;
     z-index: 50;
+}
+
+/* At zoomed sizes, hide the brand subtitle and shrink the logo so the
+   toolbar has comfortable room for the Help/History/Settings buttons.
+   The product name remains visible (truncating with ellipsis if needed). */
+body.font-scale-large .brand-product-sub,
+body.font-scale-xlarge .brand-product-sub {
+    display: none;
+}
+body.font-scale-large .brand-logo img {
+    height: 36px;
+}
+body.font-scale-xlarge .brand-logo img {
+    height: 32px;
+}
+body.font-scale-large .brand-divider,
+body.font-scale-xlarge .brand-divider {
+    /* divider becomes pointless when subtitle is hidden */
+    display: none;
 }
 
 /* Accessibility: high-contrast palette. Overrides the brand tokens with
@@ -126,10 +159,18 @@ body.high-contrast {
     background: linear-gradient(180deg, #2E2820 0%, #26211A 100%);
     border-bottom: 1px solid #050402;
     box-shadow: var(--shadow-inset);
-    display: flex;
+    /* Grid is more predictable than flex here: first column shrinkable to
+       0 for the brand, second column natural-width and never shrunk for
+       the action buttons. Avoids any chance of buttons being pushed off
+       the right edge regardless of zoom or window width. */
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
-    justify-content: space-between;
+    gap: 16px;
     padding: 0 22px;
+    /* overflow:hidden guards against any single huge child (a future
+       button with a long label, etc.) from blowing out the toolbar */
+    overflow: hidden;
     position: relative;
     z-index: 2;
 }
@@ -139,9 +180,27 @@ body.high-contrast {
     align-items: center;
     gap: 18px;
     cursor: pointer;
+    /* Allow the brand block to shrink and truncate when window is narrow
+       or content is zoomed - the toolbar-actions side must NEVER get
+       pushed off-screen, so we sacrifice subtitle/name width first. */
+    min-width: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
     /* Clicking the brand always returns to the Library view (the "home"
        anchor). The hover styling hints at interactivity without being noisy. */
     transition: opacity 0.15s ease;
+}
+
+/* Truncate the brand text gracefully when the toolbar runs out of room */
+.brand-product {
+    min-width: 0;
+    overflow: hidden;
+}
+.brand-product-name,
+.brand-product-sub {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .brand:hover {
@@ -188,6 +247,9 @@ body.high-contrast {
     display: flex;
     align-items: center;
     gap: 4px;
+    /* Buttons must always be reachable. When the toolbar is tight (zoom or
+       narrow window), the brand block shrinks first - actions never do. */
+    flex: 0 0 auto;
 }
 
 .tool-btn {
