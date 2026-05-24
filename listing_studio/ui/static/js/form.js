@@ -487,10 +487,23 @@
         const ebayDraftBtn = LS.el("button", "btn-ghost");
         ebayDraftBtn.id = "btn-ebay-draft";
         ebayDraftBtn.textContent = "Post eBay Draft";
-        ebayDraftBtn.title = "Create an unpublished offer on eBay (review in Seller Hub → Listings → Drafts before publishing)";
+        ebayDraftBtn.title = "Create or update an unpublished eBay offer for this template. Use Preview to review before publishing.";
         ebayDraftBtn.style.marginLeft = "8px";
         ebayDraftBtn.addEventListener("click", postEbayDraft);
         left.appendChild(ebayDraftBtn);
+
+        // Preview the current eBay draft state (independent of posting).
+        const ebayPreviewBtn = LS.el("button", "btn-ghost");
+        ebayPreviewBtn.id = "btn-ebay-preview";
+        ebayPreviewBtn.textContent = "Preview eBay";
+        ebayPreviewBtn.title = "Open the in-app preview of what eBay has stored for this template's SKU. Works even if you haven't posted yet (will show empty in that case).";
+        ebayPreviewBtn.style.marginLeft = "6px";
+        ebayPreviewBtn.addEventListener("click", () => {
+            if (LS.state.currentTemplate && typeof LS.showEbayPreviewModal === "function") {
+                LS.showEbayPreviewModal(LS.state.currentTemplate.id);
+            }
+        });
+        left.appendChild(ebayPreviewBtn);
 
         bar.appendChild(left);
 
@@ -715,7 +728,7 @@
                     ✓ ${uploaded} photo${uploaded === 1 ? "" : "s"} uploaded via ${hostName}
                 </div>
                 <div style="color: var(--ink-2); margin-bottom: 10px;">
-                    The draft is in your eBay Seller Hub. Review it under <strong>Listings → Drafts</strong>, then publish when ready.
+                    The draft is saved on eBay. Click <strong>Preview</strong> to review it before publishing — eBay's own "Drafts" page doesn't render Inventory API drafts, so use the in-app preview instead.
                 </div>
             `;
         } else {
@@ -724,7 +737,7 @@
                     Draft created · photos: ${uploaded} ok, ${failed} failed
                 </div>
                 <div style="color: var(--ink-2); margin-bottom: 10px;">
-                    Review the draft on eBay's Seller Hub. Photo errors (if any) are listed below — you can drag photos into the eBay UI as a fallback.
+                    Click <strong>Preview</strong> to review what eBay has stored. Photo errors (if any) are listed below — you can drag photos into the eBay UI as a fallback after publishing.
                 </div>
             `;
             if (photoResults.errors && photoResults.errors.length > 0) {
@@ -752,10 +765,17 @@
             }
         }
 
-        const openBtn = LS.el("button");
-        openBtn.textContent = "→ Open eBay Seller Hub";
-        Object.assign(openBtn.style, {
-            display: "inline-block",
+        // Two-button row: Preview (always) + Publish (lit if we have an offer)
+        const buttonRow = LS.el("div");
+        Object.assign(buttonRow.style, {
+            display: "flex",
+            gap: "10px",
+            flexWrap: "wrap",
+        });
+
+        const previewBtn = LS.el("button");
+        previewBtn.textContent = "👁 Preview eBay Listing";
+        Object.assign(previewBtn.style, {
             padding: "8px 14px",
             background: "var(--gold-bright)",
             color: "var(--bg-deep)",
@@ -765,10 +785,35 @@
             fontSize: "13px",
             cursor: "pointer",
         });
-        openBtn.addEventListener("click", () => {
-            window.open(result.url || "https://www.ebay.com/sh/lst/drafts", "_blank");
+        previewBtn.addEventListener("click", () => {
+            backdrop.remove();
+            if (typeof LS.showEbayPreviewModal === "function" && LS.state.currentTemplate) {
+                LS.showEbayPreviewModal(LS.state.currentTemplate.id);
+            }
         });
-        next.appendChild(openBtn);
+        buttonRow.appendChild(previewBtn);
+
+        const publishBtn = LS.el("button");
+        publishBtn.textContent = "📤 Publish to eBay";
+        Object.assign(publishBtn.style, {
+            padding: "8px 14px",
+            background: "transparent",
+            color: "var(--ink-1)",
+            border: "1px solid var(--gold)",
+            borderRadius: "4px",
+            fontWeight: "600",
+            fontSize: "13px",
+            cursor: "pointer",
+        });
+        publishBtn.addEventListener("click", () => {
+            backdrop.remove();
+            if (typeof LS.confirmPublishToEbay === "function" && LS.state.currentTemplate) {
+                LS.confirmPublishToEbay(LS.state.currentTemplate.id);
+            }
+        });
+        buttonRow.appendChild(publishBtn);
+
+        next.appendChild(buttonRow);
         card.appendChild(next);
 
         // Stored-summary diagnostic. Shows what eBay actually echoed back

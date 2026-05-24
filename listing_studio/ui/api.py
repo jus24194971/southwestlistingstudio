@@ -1557,6 +1557,104 @@ class _SimpleNamespace:
             setattr(self, k, v)
 
 
+@app.get("/api/templates/{template_id}/ebay-preview")
+async def get_template_ebay_preview(template_id: int) -> dict:
+    """Fetch the inventory_item + offer eBay has stored for this template.
+
+    Seller Hub doesn't render unpublished Inventory API offers as drafts,
+    so we render our own preview from this data. Always pulls fresh from
+    eBay so the preview reflects whatever the last post-to-ebay call
+    actually stored (or the result of any in-app edit).
+    """
+    from listing_studio.core.models import Template
+    from listing_studio.platforms.ebay import EbayConnector
+
+    with session_scope() as session:
+        template = session.get(Template, template_id)
+        if template is None:
+            raise HTTPException(404, f"Template {template_id} not found")
+        sku = f"ls-{template.id}"
+        # Snapshot the local-side fields used by the preview, so the UI
+        # can render even if eBay's GET is down.
+        local = {
+            "name": template.name,
+            "title": template.title,
+            "description": template.description,
+            "brand": template.brand,
+            "model": template.model,
+            "condition": template.condition,
+            "base_price_cents": template.base_price_cents,
+            "quantity": template.quantity,
+            "ebay_category_id": (
+                template.category.ebay_category_id if template.category else None
+            ),
+            "ebay_shipping_type": template.ebay_shipping_type,
+            "ebay_shipping_override_cents": template.ebay_shipping_override_cents,
+            "photo_count": len(template.photos or []),
+        }
+
+    connector = EbayConnector()
+    if not connector.has_user_token():
+        return {
+            "sku": sku,
+            "local": local,
+            "ebay": {"inventory": None, "offer": None,
+                     "errors": ["eBay seller account not authorized."]},
+        }
+    ebay_data = await connector.fetch_inventory_and_offer(sku)
+    return {"sku": sku, "local": local, "ebay": ebay_data}
+
+
+@app.post("/api/templates/{template_id}/publish-to-ebay")
+async def publish_template_to_ebay(template_id: int) -> dict:
+    """Publish the unpublished eBay offer for this template, going live.
+
+    Looks up the most recent UNPUBLISHED offer for the template's SKU,
+    then calls publish. Returns the live listingId + URL. Raises 400 if
+    no unpublished offer exists (caller should Post Draft first).
+    """
+    from listing_studio.core.models import Template
+    from listing_studio.platforms.base import PostingError
+    from listing_studio.platforms.ebay import EbayConnector
+
+    with session_scope() as session:
+        template = session.get(Template, template_id)
+        if template is None:
+            raise HTTPException(404, f"Template {template_id} not found")
+        sku = f"ls-{template.id}"
+
+    connector = EbayConnector()
+    if not connector.has_user_token():
+        raise HTTPException(400, "eBay seller account not authorized.")
+
+    ebay_data = await connector.fetch_inventory_and_offer(sku)
+    offer = ebay_data.get("offer")
+    if not offer or not offer.get("offerId"):
+        raise HTTPException(
+            400,
+            "No eBay offer found for this template. Click Post eBay Draft first.",
+        )
+    if offer.get("status") == "PUBLISHED":
+        # Already live - return the listing info instead of re-publishing.
+        listing_id = offer.get("listing", {}).get("listingId") if isinstance(offer.get("listing"), dict) else None
+        return {
+            "already_published": True,
+            "listing_id": listing_id,
+            "url": f"https://www.ebay.com/itm/{listing_id}" if listing_id else "https://www.ebay.com/sh/lst/active",
+        }
+
+    try:
+        result = await connector.publish_offer(offer["offerId"])
+    except PostingError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    return {
+        "already_published": False,
+        "listing_id": result.get("listing_id"),
+        "url": result.get("url"),
+    }
+
+
 @app.get("/api/platforms/squarespace/store-pages")
 async def get_squarespace_store_pages() -> list[dict]:
     """Return the Squarespace store pages discoverable from existing products.

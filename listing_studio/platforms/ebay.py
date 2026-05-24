@@ -755,6 +755,127 @@ class EbayConnector(PlatformConnector):
             return out
 
     # ------------------------------------------------------------------
+    # Preview helpers (inventory_item + offer fetch by SKU/offerId)
+    # ------------------------------------------------------------------
+
+    async def fetch_inventory_and_offer(self, sku: str) -> dict[str, Any]:
+        """Pull the current inventory_item and matching offer for a SKU.
+
+        Returns a dict like::
+
+            {
+                "inventory": {...} | None,   # eBay inventory_item JSON, if found
+                "offer":     {...} | None,   # most recent offer for the SKU, if any
+                "errors":    ["..."]         # human-readable fetch warnings
+            }
+
+        Used by the in-app preview view: Seller Hub doesn't render
+        unpublished Inventory API offers, so we render our own preview
+        from this data.
+        """
+        result: dict[str, Any] = {"inventory": None, "offer": None, "errors": []}
+        if not self.has_user_token():
+            result["errors"].append("eBay seller account not authorized.")
+            return result
+
+        async with httpx.AsyncClient(timeout=self.TIMEOUT_SECONDS) as client:
+            try:
+                token = await self._get_user_token(client)
+            except PostingError as exc:
+                result["errors"].append(f"token refresh failed: {exc}")
+                return result
+            headers = self._bearer_headers(token)
+
+            # ---- inventory_item GET (eBay's read endpoint is flaky; retry once) ----
+            import asyncio as _asyncio
+            for attempt in (1, 2):
+                try:
+                    rb_inv = await client.get(
+                        f"{self.BASE_URL}/sell/inventory/v1/inventory_item/{sku}",
+                        headers=headers,
+                    )
+                    if rb_inv.status_code == 200:
+                        result["inventory"] = rb_inv.json()
+                        break
+                    elif rb_inv.status_code == 404:
+                        result["errors"].append(f"No inventory_item for SKU {sku} on eBay.")
+                        break
+                    else:
+                        result["errors"].append(
+                            f"inventory_item GET attempt {attempt} returned {rb_inv.status_code}"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    result["errors"].append(f"inventory_item GET attempt {attempt} failed: {exc}")
+                if attempt == 1:
+                    await _asyncio.sleep(1.5)
+
+            # ---- offer lookup by SKU ----
+            try:
+                lookup = await client.get(
+                    f"{self.BASE_URL}/sell/inventory/v1/offer",
+                    headers=headers,
+                    params={"sku": sku, "marketplace_id": EBAY_MARKETPLACE_ID, "limit": "5"},
+                )
+                if lookup.status_code == 200:
+                    offers = lookup.json().get("offers") or []
+                    # Prefer UNPUBLISHED; fall back to whatever's there.
+                    preferred = next(
+                        (o for o in offers if o.get("status") == "UNPUBLISHED"),
+                        offers[0] if offers else None,
+                    )
+                    result["offer"] = preferred
+                elif lookup.status_code == 404:
+                    result["errors"].append(f"No offer for SKU {sku} on eBay.")
+                else:
+                    result["errors"].append(f"offer lookup returned {lookup.status_code}")
+            except Exception as exc:  # noqa: BLE001
+                result["errors"].append(f"offer lookup failed: {exc}")
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Publish an unpublished offer
+    # ------------------------------------------------------------------
+
+    async def publish_offer(self, offer_id: str) -> dict[str, Any]:
+        """Publish an unpublished offer, converting it to a live listing.
+
+        Returns::
+
+            {"listing_id": "...", "url": "https://www.ebay.com/itm/<id>"}
+
+        Raises PostingError on failure. Note: publishing a listing is
+        irreversible in the sense that the listing becomes immediately
+        visible on eBay (you can withdraw it via DELETE on the listing,
+        but it counts toward your insertion fee allowance).
+        """
+        if not self.has_user_token():
+            raise PostingError(
+                self.platform,
+                "Seller account not authorized.",
+                is_auth_error=True,
+            )
+
+        async with httpx.AsyncClient(timeout=self.TIMEOUT_SECONDS) as client:
+            token = await self._get_user_token(client)
+            headers = self._bearer_headers(token)
+            headers["Content-Type"] = "application/json"
+            headers["Content-Language"] = "en-US"
+
+            response = await client.post(
+                f"{self.BASE_URL}/sell/inventory/v1/offer/{offer_id}/publish",
+                headers=headers,
+            )
+
+        if response.status_code not in (200, 201):
+            _raise_ebay_error(self.platform, "offer publish", response)
+
+        data = response.json()
+        listing_id = data.get("listingId")
+        url = f"https://www.ebay.com/itm/{listing_id}" if listing_id else "https://www.ebay.com/sh/lst/active"
+        return {"listing_id": listing_id, "url": url, "raw": data}
+
+    # ------------------------------------------------------------------
     # Draft listing creation (inventory_item + offer, unpublished)
     # ------------------------------------------------------------------
 
