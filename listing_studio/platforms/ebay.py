@@ -247,12 +247,14 @@ class EbayConnector(PlatformConnector):
         if not client_id or not ru_name:
             return None
 
+        # eBay's OAuth only accepts: client_id, response_type, redirect_uri,
+        # scope, state. Standard OAuth params like `prompt` cause eBay to
+        # return "invalid_request: Input request parameters are invalid."
         params = {
             "client_id": client_id,
             "redirect_uri": ru_name,
             "response_type": "code",
             "scope": " ".join(EBAY_USER_SCOPES),
-            "prompt": "login",  # Always ask for sign-in; avoids picking up the wrong account
         }
         if state:
             params["state"] = state
