@@ -1,11 +1,18 @@
-"""OAuth credential storage via the OS keyring.
+"""OAuth credential storage.
 
-Tokens never touch the filesystem. On Windows they go in Credential Manager,
-on macOS the Keychain, and on Linux Secret Service (gnome-keyring/KWallet).
+Strategy: try the OS keyring first (Windows Credential Manager / macOS
+Keychain / Linux Secret Service). If that fails - most commonly Windows
+WinError 1783 "The stub received bad data" raised when the blob exceeds
+~2560 bytes - fall back to a file under ``%LOCALAPPDATA%\\ListingStudio\\
+credentials\\``. Files there inherit the user-only ACL Windows applies to
+LOCALAPPDATA, so the security model is the same as keyring for a personal
+single-user install.
 
-For each platform we store one JSON blob containing access_token, refresh_token,
-expires_at, and any platform-specific metadata. The blob format is intentionally
-flexible because the four platforms have different token shapes.
+For each platform we store one JSON blob containing access_token,
+refresh_token, expires_at, and any platform-specific metadata. The blob
+format is intentionally flexible because the platforms have different
+token shapes. Blobs are gzip+base64 encoded before storage to keep small
+ones inside the keyring limit when possible.
 """
 
 from __future__ import annotations
@@ -15,6 +22,7 @@ import gzip
 import json
 import logging
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import keyring
@@ -87,6 +95,114 @@ def _service_key_for(service_name: str) -> str:
 _keyring_warned = False
 
 
+# ---------------------------------------------------------------------------
+# File-based storage fallback
+# ---------------------------------------------------------------------------
+#
+# Used when the OS keyring rejects the write (most common cause: Windows's
+# 2560-byte limit on credential values, raised as WinError 1783). One file
+# per credential name under <data_dir>/credentials/. On Windows the parent
+# data dir is %LOCALAPPDATA%/ListingStudio/ which inherits user-only ACLs.
+
+
+def _credentials_dir() -> Path:
+    d = settings.data_dir / "credentials"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _file_path_for(name: str) -> Path:
+    # The keyring "username" can contain characters that aren't safe for
+    # filesystem paths (colons, slashes). Replace them with underscores
+    # so the path is portable.
+    safe = name.replace("::", "__").replace(":", "_").replace("/", "_")
+    return _credentials_dir() / f"{safe}.cred"
+
+
+def _write_file_credentials(name: str, serialized: str) -> None:
+    path = _file_path_for(name)
+    path.write_text(serialized, encoding="utf-8")
+
+
+def _read_file_credentials(name: str) -> str | None:
+    path = _file_path_for(name)
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Couldn't read credentials file %s: %s", path, exc)
+        return None
+
+
+def _delete_file_credentials(name: str) -> None:
+    path = _file_path_for(name)
+    if path.exists():
+        try:
+            path.unlink()
+        except OSError as exc:
+            logger.warning("Couldn't delete credentials file %s: %s", path, exc)
+
+
+def _store_with_fallback(name: str, serialized: str) -> None:
+    """Try keyring first; on ANY failure fall back to file storage.
+
+    The keyring path is preferred when it works (OS-level encryption on
+    Windows/macOS), but when it doesn't - notably for eBay's chunky OAuth
+    tokens that exceed Windows's 2560-byte CredentialBlob limit - we land
+    on a file in the user's LOCALAPPDATA. Files there have the same
+    user-only ACL as the rest of the app's data; no extra exposure for a
+    single-user desktop install.
+    """
+    try:
+        keyring.set_password(settings.keyring_service, name, serialized)
+        # Keyring write worked - clean up any old file fallback so we
+        # don't have two sources of truth.
+        _delete_file_credentials(name)
+        return
+    except Exception as exc:  # noqa: BLE001 - any keyring failure triggers file fallback
+        logger.info(
+            "Keyring write failed for %s (%s: %s); falling back to file storage.",
+            name, type(exc).__name__, exc,
+        )
+
+    # Fallback path
+    try:
+        _write_file_credentials(name, serialized)
+        # Try to clean up any partial/stale keyring entry too
+        try:
+            keyring.delete_password(settings.keyring_service, name)
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot save credentials for {name}: keyring failed and file "
+            f"write to {_credentials_dir()} also failed ({exc})"
+        ) from exc
+
+
+def _load_with_fallback(name: str) -> str | None:
+    """Read credentials. File fallback takes precedence over keyring.
+
+    Rationale: if file fallback was used at write time (because keyring
+    rejected the size), the keyring entry will either be missing or stale.
+    Always read file first so we get the authoritative value.
+    """
+    file_value = _read_file_credentials(name)
+    if file_value is not None:
+        return file_value
+    return _safe_get(settings.keyring_service, name)
+
+
+def _delete_with_fallback(name: str) -> None:
+    """Delete from both stores (one of them might be empty already)."""
+    try:
+        keyring.delete_password(settings.keyring_service, name)
+    except (keyring.errors.PasswordDeleteError, keyring.errors.NoKeyringError):
+        pass
+    _delete_file_credentials(name)
+
+
 def _safe_get(service: str, username: str) -> str | None:
     """Wrap keyring.get_password to handle environments without a keyring backend.
 
@@ -123,35 +239,25 @@ def store_credentials(platform: Platform, payload: dict[str, Any]) -> None:
     Anything else the platform needs (eBay's seller account ID, Etsy's shop ID,
     Squarespace's site UUID) goes into the same blob.
 
-    Raises RuntimeError if no keyring backend is available - storing creds is
-    a deliberate user action and silently failing would be very confusing.
+    Raises RuntimeError only if both keyring AND file fallback fail.
+    The fallback covers the common case of Windows rejecting an oversized
+    eBay token blob (WinError 1783).
     """
     serialized = _serialize(payload)
-    try:
-        keyring.set_password(settings.keyring_service, _key_for(platform), serialized)
-    except keyring.errors.NoKeyringError as exc:
-        raise RuntimeError(
-            "Cannot save credentials: no keyring backend available. "
-            "On Windows this should work out of the box; on Linux you may need "
-            "to install 'gnome-keyring' or equivalent."
-        ) from exc
+    _store_with_fallback(_key_for(platform), serialized)
 
 
 def load_credentials(platform: Platform) -> dict[str, Any] | None:
     """Retrieve credentials for a platform, or None if not connected."""
-    raw = _safe_get(settings.keyring_service, _key_for(platform))
+    raw = _load_with_fallback(_key_for(platform))
     if raw is None:
         return None
     return _deserialize(raw)
 
 
 def clear_credentials(platform: Platform) -> None:
-    """Delete credentials for a platform (user clicked Disconnect)."""
-    try:
-        keyring.delete_password(settings.keyring_service, _key_for(platform))
-    except (keyring.errors.PasswordDeleteError, keyring.errors.NoKeyringError):
-        # Already missing or no backend - nothing to do
-        pass
+    """Delete credentials from both keyring and file fallback."""
+    _delete_with_fallback(_key_for(platform))
 
 
 def is_connected(platform: Platform) -> bool:
@@ -199,34 +305,22 @@ def account_label(platform: Platform) -> str | None:
 
 
 def store_service_credentials(service_name: str, payload: dict[str, Any]) -> None:
-    """Store credentials for a non-platform service (e.g. an image host).
-
-    Raises RuntimeError if no keyring backend is available - same contract
-    as the platform version, since this is also a user-initiated save.
-    """
+    """Store service credentials. Same keyring-then-file fallback as platforms."""
     serialized = _serialize(payload)
-    try:
-        keyring.set_password(settings.keyring_service, _service_key_for(service_name), serialized)
-    except keyring.errors.NoKeyringError as exc:
-        raise RuntimeError(
-            "Cannot save credentials: no keyring backend available."
-        ) from exc
+    _store_with_fallback(_service_key_for(service_name), serialized)
 
 
 def load_service_credentials(service_name: str) -> dict[str, Any] | None:
     """Retrieve service credentials, or None if not configured."""
-    raw = _safe_get(settings.keyring_service, _service_key_for(service_name))
+    raw = _load_with_fallback(_service_key_for(service_name))
     if raw is None:
         return None
     return _deserialize(raw)
 
 
 def clear_service_credentials(service_name: str) -> None:
-    """Delete service credentials (user clicked Disconnect on the host card)."""
-    try:
-        keyring.delete_password(settings.keyring_service, _service_key_for(service_name))
-    except (keyring.errors.PasswordDeleteError, keyring.errors.NoKeyringError):
-        pass
+    """Delete service credentials from both keyring and file fallback."""
+    _delete_with_fallback(_service_key_for(service_name))
 
 
 def is_service_connected(service_name: str) -> bool:
