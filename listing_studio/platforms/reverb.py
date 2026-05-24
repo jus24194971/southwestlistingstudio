@@ -33,12 +33,9 @@ from typing import Any
 import httpx
 
 from listing_studio import __version__
-from listing_studio.core.credentials import (
-    is_connected as _has_creds,
-    load_credentials,
-)
+from listing_studio.core import credentials as creds
 from listing_studio.core.models import Platform, Template
-from listing_studio.platforms.base import PlatformConnector, PostOutcome, PostingError
+from listing_studio.platforms.base import PlatformConnector, PostingError, PostOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +76,13 @@ class ReverbConnector(PlatformConnector):
     # ------------------------------------------------------------------
 
     async def is_connected(self) -> bool:
-        return _has_creds(self.platform)
+        return creds.is_connected(self.platform)
 
     def _get_token(self) -> str | None:
-        creds = load_credentials(self.platform)
-        if creds is None:
+        stored = creds.load_credentials(self.platform)
+        if stored is None:
             return None
-        return creds.get("api_key")
+        return stored.get("api_key")
 
     def _headers(self, token: str, content_type: str = "application/hal+json") -> dict[str, str]:
         return {

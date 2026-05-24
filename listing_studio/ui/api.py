@@ -35,7 +35,6 @@ from listing_studio.core.schemas import (
     PlatformConnectionStatus,
     PostRequest,
     PostResponse,
-    ReverbTaxonomyMatch,
     TemplateCreate,
     TemplateOut,
     TemplateSummary,
@@ -573,7 +572,6 @@ async def install_update_endpoint() -> dict:
         _install_state["bytes_total"] = total
 
     def _do_install():
-        import threading
 
         try:
             install_root = install_update(release, progress_callback=progress_callback)
@@ -654,9 +652,10 @@ async def add_photos_to_template(template_id: int, payload: dict) -> dict:
     All paths must pass NAS security validation. Any path that's not under
     a configured NAS root will cause the entire request to fail (400).
     """
+    from datetime import datetime as _datetime
+
     from listing_studio.core.models import Tag, Template, TemplatePhoto, TemplateTag
     from listing_studio.core.nas import PathOutsideRoots, validate_path
-    from datetime import datetime as _datetime
 
     paths = payload.get("paths", [])
     tags = payload.get("tags", [])
@@ -794,8 +793,9 @@ async def list_categories() -> list[CategoryOut]:
     Sorted alphabetically by name. Each category includes ``template_count``
     so the library sidebar can show "Tuners (12)" style labels.
     """
-    from listing_studio.core.models import Category, Template
     from sqlalchemy import func as sqlfunc
+
+    from listing_studio.core.models import Category, Template
 
     out: list[CategoryOut] = []
     with session_scope() as session:
@@ -857,8 +857,9 @@ async def create_category(payload: CategoryCreate) -> CategoryOut:
 @app.patch("/api/categories/{category_id}")
 async def update_category(category_id: int, payload: CategoryUpdate) -> CategoryOut:
     """Update an existing category."""
-    from listing_studio.core.models import Category, Template
     from sqlalchemy import func as sqlfunc
+
+    from listing_studio.core.models import Category, Template
 
     with session_scope() as session:
         cat = session.get(Category, category_id)
@@ -898,8 +899,9 @@ async def update_category(category_id: int, payload: CategoryUpdate) -> Category
 @app.delete("/api/categories/{category_id}", status_code=204)
 async def delete_category(category_id: int) -> None:
     """Delete a category. Fails if any templates still reference it."""
-    from listing_studio.core.models import Category, Template
     from sqlalchemy import func as sqlfunc
+
+    from listing_studio.core.models import Category, Template
 
     with session_scope() as session:
         cat = session.get(Category, category_id)
@@ -979,6 +981,7 @@ async def pick_local_photos_endpoint() -> dict:
     """
     import asyncio
     import logging
+
     from listing_studio.core.local_picker import pick_local_photos
     from listing_studio.core.nas import PathOutsideRoots, register_local_file
 
@@ -1120,7 +1123,7 @@ async def post_template_to_reverb(template_id: int, payload: dict | None = None)
             }
         }
     """
-    from listing_studio.core.models import Template, Preference
+    from listing_studio.core.models import Preference, Template
     from listing_studio.core.photo_host import get_configured_host
     from listing_studio.core.photo_processor import (
         NormalizeError,
@@ -1217,6 +1220,7 @@ async def post_template_to_reverb(template_id: int, payload: dict | None = None)
 
     if host is not None and photo_paths:
         from pathlib import Path as PathLib
+
         from listing_studio.core.photo_host import PhotoHostError
 
         for idx, photo_path_str in enumerate(photo_paths):
@@ -1281,6 +1285,7 @@ async def open_template_photo_folder(template_id: int) -> dict:
     import os
     import subprocess
     import sys
+
     from listing_studio.core.models import Template
 
     with session_scope() as session:
