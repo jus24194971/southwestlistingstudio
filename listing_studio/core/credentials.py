@@ -10,6 +10,8 @@ flexible because the four platforms have different token shapes.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 import logging
 from datetime import datetime, timedelta
@@ -22,6 +24,45 @@ from listing_studio.config import settings
 from listing_studio.core.models import Platform
 
 logger = logging.getLogger(__name__)
+
+
+# Windows Credential Manager has a ~2560 byte limit on credential blob values
+# (raised as WinError 1783 "The stub received bad data" when exceeded). eBay's
+# OAuth user_access_token + user_refresh_token together easily exceed this -
+# refresh tokens alone can be 2-3 KB. We compress every blob before storing
+# so the encoded value stays well under the limit. On load, we transparently
+# decompress; entries from older app versions (no prefix) keep working.
+_GZIP_PREFIX = "gz:"
+
+
+def _serialize(payload: dict[str, Any]) -> str:
+    """JSON-encode + gzip + base64 the payload for keyring storage.
+
+    Gzip cuts eBay's token blob to ~30% of original size, well under the
+    Windows Credential Manager limit. The "gz:" prefix lets load_credentials
+    distinguish compressed payloads from older plain-JSON entries.
+    """
+    raw = json.dumps(payload, default=str).encode("utf-8")
+    compressed = gzip.compress(raw, compresslevel=9)
+    return _GZIP_PREFIX + base64.b64encode(compressed).decode("ascii")
+
+
+def _deserialize(stored: str) -> dict[str, Any] | None:
+    """Inverse of _serialize. Handles both new (gz:) and legacy (plain JSON)."""
+    if stored.startswith(_GZIP_PREFIX):
+        try:
+            compressed = base64.b64decode(stored[len(_GZIP_PREFIX):])
+            raw = gzip.decompress(compressed)
+            return json.loads(raw)
+        except (ValueError, OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not decode compressed credentials: %s", exc)
+            return None
+    # Backward compatibility: anything stored before we introduced
+    # compression is plain JSON.
+    try:
+        return json.loads(stored)
+    except json.JSONDecodeError:
+        return None
 
 
 def _key_for(platform: Platform) -> str:
@@ -85,7 +126,7 @@ def store_credentials(platform: Platform, payload: dict[str, Any]) -> None:
     Raises RuntimeError if no keyring backend is available - storing creds is
     a deliberate user action and silently failing would be very confusing.
     """
-    serialized = json.dumps(payload, default=str)
+    serialized = _serialize(payload)
     try:
         keyring.set_password(settings.keyring_service, _key_for(platform), serialized)
     except keyring.errors.NoKeyringError as exc:
@@ -101,11 +142,7 @@ def load_credentials(platform: Platform) -> dict[str, Any] | None:
     raw = _safe_get(settings.keyring_service, _key_for(platform))
     if raw is None:
         return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        # Corrupt entry - treat as missing rather than crashing
-        return None
+    return _deserialize(raw)
 
 
 def clear_credentials(platform: Platform) -> None:
@@ -167,7 +204,7 @@ def store_service_credentials(service_name: str, payload: dict[str, Any]) -> Non
     Raises RuntimeError if no keyring backend is available - same contract
     as the platform version, since this is also a user-initiated save.
     """
-    serialized = json.dumps(payload, default=str)
+    serialized = _serialize(payload)
     try:
         keyring.set_password(settings.keyring_service, _service_key_for(service_name), serialized)
     except keyring.errors.NoKeyringError as exc:
@@ -181,10 +218,7 @@ def load_service_credentials(service_name: str) -> dict[str, Any] | None:
     raw = _safe_get(settings.keyring_service, _service_key_for(service_name))
     if raw is None:
         return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return None
+    return _deserialize(raw)
 
 
 def clear_service_credentials(service_name: str) -> None:

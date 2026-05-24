@@ -475,17 +475,38 @@ async def ebay_oauth_callback(
         )
         return HTMLResponse(_oauth_result_page(False, body), status_code=400)
 
+    import logging
+    import traceback
     from listing_studio.platforms.base import PostingError
     from listing_studio.platforms.ebay import EbayConnector
+
+    log = logging.getLogger(__name__)
 
     connector = EbayConnector()
     try:
         merged = await connector.exchange_code_for_tokens(code)
     except PostingError as exc:
+        # eBay rejected the code, or our app credentials are misconfigured
         return HTMLResponse(
             _oauth_result_page(False, f"<h1>Couldn't exchange code</h1><p>{exc}</p>"),
             status_code=400,
         )
+    except Exception as exc:  # noqa: BLE001 - we want to catch literally everything here
+        # Anything else: log full traceback AND show it on the page so the
+        # user doesn't see a bare "Internal Server Error" with no clue.
+        # OAuth callbacks are one-shot - if we don't surface the error now,
+        # the user has to re-run the whole flow to retry.
+        tb = traceback.format_exc()
+        log.exception("eBay OAuth callback: unhandled exception during token exchange")
+        body = (
+            f"<h1>Unexpected error during token exchange</h1>"
+            f"<p>{type(exc).__name__}: {exc}</p>"
+            f"<p style='color: #8A7B5E; font-size: 12px;'>Full traceback (also in the log file):</p>"
+            f"<pre style='background: #1B1813; padding: 8px; border-radius: 4px; "
+            f"white-space: pre-wrap; word-break: break-all; font-size: 11px; "
+            f"max-height: 320px; overflow: auto;'>{tb[:3000]}</pre>"
+        )
+        return HTMLResponse(_oauth_result_page(False, body), status_code=500)
 
     label = merged.get("account_label") or "eBay seller"
     body = f"""
