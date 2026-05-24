@@ -414,6 +414,13 @@ class ReverbConnector(PlatformConnector):
                 "has_inventory": template.quantity > 1,
                 "inventory": template.quantity,
                 "offers_enabled": True,
+                # Dad doesn't track UPC/EAN codes - his items are vintage
+                # guitar parts that mostly don't have them anyway. Reverb
+                # requires "UPC does not apply" to be marked true for
+                # Brand New listings or they refuse to publish. Defaulting
+                # to true here means the draft is ready-to-publish without
+                # Dad having to tick this box manually each time.
+                "upc_does_not_apply": True,
             }
 
             # Optional fields
@@ -458,7 +465,14 @@ class ReverbConnector(PlatformConnector):
             raise PostingError(
                 self.platform, f"Reverb validation error: {detail}",
             )
-        if response.status_code not in (200, 201):
+        # 202 Accepted is success - Reverb does some validation async and
+        # returns 202 with the created listing payload + a message like
+        # "Your listing has been created. We are processing your request
+        # and will send you an email if any errors are found." The draft
+        # exists on Reverb's side; any post-create issues (like missing
+        # UPC, item specifics) show up in the Reverb seller console as
+        # "address these issues to publish" warnings on the draft itself.
+        if response.status_code not in (200, 201, 202):
             raise PostingError(
                 self.platform,
                 f"Reverb error {response.status_code}: {response.text[:300]}",
