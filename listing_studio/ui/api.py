@@ -420,7 +420,11 @@ async def ebay_oauth_start() -> dict:
 
 
 @app.get("/api/ebay/oauth/callback")
-async def ebay_oauth_callback(code: str | None = None, error: str | None = None):
+async def ebay_oauth_callback(
+    request: Request,
+    code: str | None = None,
+    error: str | None = None,
+):
     """Handle eBay's redirect after Dad approves (or denies) the consent.
 
     eBay redirects here with ``?code=XXXX`` (success) or ``?error=...``
@@ -431,14 +435,45 @@ async def ebay_oauth_callback(code: str | None = None, error: str | None = None)
 
     This endpoint exists because eBay's RuName-to-URL mapping is configured
     in the dev dashboard to point at http://localhost:8731/api/ebay/oauth/callback.
+
+    Defensive code recovery: in the wild we saw cases where the URL the
+    browser navigated to ended up as ``?=value&expires_in=...`` (no
+    ``code=`` prefix) - either due to manual URL editing during
+    troubleshooting or an edge case in browser handling of the worker's
+    bounce HTML. eBay OAuth codes always start with ``v^1.1`` (or
+    ``v%5E1.1`` URL-encoded), so if the normal ``code`` param is missing
+    we scan the rest of the query string for a value with that signature.
     """
     from fastapi.responses import HTMLResponse
 
     if error:
         body = f"<h1>eBay authorization failed</h1><p>{error}</p>"
         return HTMLResponse(_oauth_result_page(False, body), status_code=400)
+
+    # Fallback: if code is missing, look through all query params for an
+    # eBay-shaped code value. FastAPI auto-URL-decodes values so we look
+    # for the decoded prefix "v^1.1".
     if not code:
-        return HTMLResponse(_oauth_result_page(False, "<h1>Missing code parameter</h1>"), status_code=400)
+        for key, value in request.query_params.items():
+            if value and value.startswith("v^1.1"):
+                code = value
+                break
+
+    if not code:
+        # Show the raw query string in the error page so the user can see
+        # what we actually received - helps diagnose URL-edit mishaps.
+        raw_qs = str(request.url.query) or "(none)"
+        body = (
+            f"<h1>Missing code parameter</h1>"
+            f"<p>We didn't see a <code>code=</code> parameter in the callback URL, "
+            f"and no other param value matched eBay's OAuth code format.</p>"
+            f"<p>Raw query string received:</p>"
+            f"<pre style='word-break: break-all; white-space: pre-wrap; background: #1B1813; padding: 8px; border-radius: 4px;'>"
+            f"{raw_qs[:500]}</pre>"
+            f"<p>Re-run the OAuth flow from Settings &rarr; eBay; the code expires after 5 minutes "
+            f"so a stale one is the usual cause.</p>"
+        )
+        return HTMLResponse(_oauth_result_page(False, body), status_code=400)
 
     from listing_studio.platforms.base import PostingError
     from listing_studio.platforms.ebay import EbayConnector
