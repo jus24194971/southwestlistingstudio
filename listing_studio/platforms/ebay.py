@@ -41,6 +41,8 @@ References:
 from __future__ import annotations
 
 import base64
+import html
+import json
 import logging
 import time
 from datetime import datetime, timedelta
@@ -809,14 +811,20 @@ class EbayConnector(PlatformConnector):
         # eBay wants HTML in listingDescription. The template's description
         # is plaintext-ish; wrap newlines and double-newlines in <br>/<p>
         # so it renders cleanly in eBay's preview.
+        #
+        # IMPORTANT: escape user-supplied text before wrapping in tags. An
+        # unescaped `<`, `&`, or stray angle bracket in Dad's description
+        # surfaces as a confusing "Core Inventory Service internal error"
+        # from eBay's HTML parser rather than a useful validation message.
         raw_desc = (template.description or "").strip()
         if raw_desc:
             paragraphs = [p.strip() for p in raw_desc.split("\n\n") if p.strip()]
             description_html = "".join(
-                f"<p>{p.replace(chr(10), '<br>')}</p>" for p in paragraphs
+                f"<p>{html.escape(p).replace(chr(10), '<br>')}</p>"
+                for p in paragraphs
             )
         else:
-            description_html = f"<p>{template.title}</p>"
+            description_html = f"<p>{html.escape(template.title or '')}</p>"
 
         # Item specifics ("aspects" in eBay's vocabulary). At minimum we
         # supply Brand and MPN; some categories require more, and eBay will
@@ -988,14 +996,35 @@ def _raise_ebay_error(platform, step: str, response: httpx.Response) -> None:
     We pull the first error's message into the exception text. Additional
     errors get appended in parentheses so the user sees a complete picture
     without us needing a structured renderer.
+
+    We ALSO dump the full error JSON to the log so that when eBay's primary
+    message is unhelpful (e.g. "Core Inventory Service internal error"),
+    we can still see the underlying `parameters` array — that's where eBay
+    actually tells us which field/aspect/value it choked on.
     """
     try:
         data = response.json()
     except Exception:
+        logger.error(
+            "eBay %s: non-JSON error response HTTP %d: %s",
+            step,
+            response.status_code,
+            response.text[:1000],
+        )
         raise PostingError(
             Platform.EBAY,
             f"eBay {step} returned HTTP {response.status_code}: {response.text[:300]}",
         )
+
+    # Always log the full response so we never lose error context to the
+    # short user-visible message. Truncated at 4KB just in case eBay returns
+    # something gigantic.
+    try:
+        full_dump = json.dumps(data, indent=2)[:4000]
+    except Exception:
+        full_dump = str(data)[:4000]
+    logger.error("eBay %s failed (HTTP %d). Full response:\n%s",
+                 step, response.status_code, full_dump)
 
     errors = data.get("errors") or []
     if not errors:
@@ -1006,6 +1035,20 @@ def _raise_ebay_error(platform, step: str, response: httpx.Response) -> None:
 
     primary = errors[0]
     msg = primary.get("longMessage") or primary.get("message") or "unknown"
+
+    # eBay puts the actual problem field in `parameters`. For an "internal
+    # error" that's the only useful breadcrumb. Append the first 2 params
+    # to the user-visible message so Dad doesn't have to crack open the log
+    # to know which field is unhappy.
+    params = primary.get("parameters") or []
+    if params:
+        param_bits = []
+        for p in params[:3]:
+            name = p.get("name") or "?"
+            value = (p.get("value") or "")[:60]
+            param_bits.append(f"{name}={value}" if value else name)
+        msg = f"{msg} [eBay params: {'; '.join(param_bits)}]"
+
     if len(errors) > 1:
         extras = ", ".join(
             (e.get("message") or "?")[:80] for e in errors[1:4]
