@@ -160,6 +160,20 @@ def _run_migrations(engine: Engine) -> None:
                         f'ALTER TABLE {table_name} ADD COLUMN "{col_name}" {col_type}'
                     ))
 
+        # Backfill: any pre-v0.5.20 templates have item_specifics = NULL.
+        # Set them to '{}' so the JSON column round-trips cleanly. Safe to
+        # run unconditionally - if the column is already populated, the
+        # WHERE clause matches nothing.
+        try:
+            conn.execute(text(
+                "UPDATE templates SET item_specifics = '{}' "
+                "WHERE item_specifics IS NULL"
+            ))
+        except Exception:
+            # Column may not exist yet on a brand-new DB; create_all
+            # handles those cases.
+            pass
+
 
 @contextmanager
 def session_scope() -> Iterator[Session]:

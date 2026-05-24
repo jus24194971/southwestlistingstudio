@@ -218,7 +218,9 @@ class TemplateOut(BaseModel):
     reverb_shipping_flat_cents: int = 0
     ebay_shipping_type: str | None = None
     ebay_shipping_override_cents: int = 0
-    item_specifics: dict[str, Any] = Field(default_factory=dict)
+    # Nullable in the DB for rows that existed before v0.5.20's ALTER
+    # TABLE. The UI normalizes a null value to {} on read.
+    item_specifics: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
     last_posted_at: datetime | None
