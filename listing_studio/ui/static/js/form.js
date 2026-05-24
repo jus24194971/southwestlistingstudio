@@ -771,12 +771,53 @@
         next.appendChild(openBtn);
         card.appendChild(next);
 
+        // Stored-summary diagnostic. Shows what eBay actually echoed back
+        // from the readback GET. If these numbers look right but the
+        // Seller Hub Drafts page renders the listing as empty, the data
+        // is in eBay's system - it's just Seller Hub's drafts view that
+        // doesn't render Inventory API data. In that case, the listing
+        // will look correct once published, or in the Listings → Inventory
+        // view.
+        const stored = result.stored_summary || {};
+        if (Object.keys(stored).length > 0) {
+            const diag = LS.el("div");
+            Object.assign(diag.style, {
+                marginTop: "14px",
+                padding: "12px 14px",
+                background: "var(--bg-input)",
+                border: "1px solid var(--ink-3)",
+                borderRadius: "4px",
+                fontSize: "12px",
+                lineHeight: "1.6",
+                fontFamily: "var(--font-mono)",
+                color: "var(--ink-2)",
+            });
+            const titleOk = stored.inventory_title ? "✓" : "✗";
+            const descOk = (stored.inventory_description_len || 0) > 0 ? "✓" : "✗";
+            const photosOk = (stored.inventory_image_count || 0) > 0 ? "✓" : "✗";
+            const aspectsOk = (stored.inventory_aspect_count || 0) > 0 ? "✓" : "✗";
+            const priceVal = stored.offer_price ? `${stored.offer_price.value} ${stored.offer_price.currency || ""}` : "—";
+            diag.innerHTML = `
+                <div style="font-weight: 600; color: var(--ink-1); margin-bottom: 6px; font-family: var(--font-sans);">
+                    What eBay stored (readback):
+                </div>
+                <div>${titleOk} Title: ${LS.escapeHTML(stored.inventory_title || "(missing)")}</div>
+                <div>${descOk} Description: ${stored.inventory_description_len || 0} chars</div>
+                <div>${photosOk} Photos: ${stored.inventory_image_count || 0}</div>
+                <div>${aspectsOk} Item specifics: ${stored.inventory_aspect_count || 0}</div>
+                <div>Condition: ${LS.escapeHTML(stored.inventory_condition || "—")}</div>
+                <div>Category: ${LS.escapeHTML(stored.offer_category_id || "—")} · Price: ${LS.escapeHTML(priceVal)}</div>
+                <div>Offer status: ${LS.escapeHTML(stored.offer_status || "—")}</div>
+            `;
+            card.appendChild(diag);
+        }
+
         const note = LS.el("div");
         note.style.marginTop = "16px";
         note.style.fontSize = "12px";
         note.style.color = "var(--ink-3)";
         note.style.lineHeight = "1.5";
-        note.textContent = "Draft offers don't charge listing fees and don't appear in search. To delete a test draft, find it in Seller Hub → Listings → Drafts.";
+        note.textContent = "Draft offers don't charge listing fees and don't appear in search. If Seller Hub's Drafts view looks empty but the readback above shows your data, the listing will render correctly once published.";
         card.appendChild(note);
 
         const footer = LS.el("div", "modal-footer-bar");

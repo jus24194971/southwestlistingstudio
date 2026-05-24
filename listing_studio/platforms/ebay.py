@@ -865,6 +865,19 @@ class EbayConnector(PlatformConnector):
                 "User-Agent": self.USER_AGENT,
             }
 
+            # Log the exact inventory_item payload going out. We had a case
+            # where the API call succeeded but the resulting Seller Hub
+            # draft was missing description/photos/aspects - this log lets
+            # us confirm what we sent vs. what eBay stored.
+            try:
+                logger.info(
+                    "eBay inventory_item PUT %s payload:\n%s",
+                    sku,
+                    json.dumps(inventory_payload, indent=2)[:4000],
+                )
+            except Exception:
+                pass
+
             inv_response = await client.put(
                 f"{self.BASE_URL}/sell/inventory/v1/inventory_item/{sku}",
                 headers=headers,
@@ -872,6 +885,31 @@ class EbayConnector(PlatformConnector):
             )
             if inv_response.status_code not in (200, 201, 204):
                 _raise_ebay_error(self.platform, "inventory item upsert", inv_response)
+
+            # Read back the inventory_item to confirm eBay stored what we
+            # sent. 204 means "accepted, no body returned" - the only way
+            # to verify the data is to GET it.
+            readback_inventory: dict[str, Any] = {}
+            try:
+                rb_inv = await client.get(
+                    f"{self.BASE_URL}/sell/inventory/v1/inventory_item/{sku}",
+                    headers=headers,
+                )
+                if rb_inv.status_code == 200:
+                    readback_inventory = rb_inv.json()
+                    logger.info(
+                        "eBay inventory_item GET %s readback:\n%s",
+                        sku,
+                        json.dumps(readback_inventory, indent=2)[:4000],
+                    )
+                else:
+                    logger.warning(
+                        "eBay inventory_item readback returned HTTP %d: %s",
+                        rb_inv.status_code,
+                        rb_inv.text[:500],
+                    )
+            except Exception as exc:  # noqa: BLE001 - diagnostic only
+                logger.warning("eBay inventory_item readback failed: %s", exc)
 
             # ---- Step 2: POST offer (unpublished) ----
             offer_payload: dict[str, Any] = {
@@ -919,6 +957,14 @@ class EbayConnector(PlatformConnector):
                     "shippingServiceType": "DOMESTIC",
                 }]
 
+            try:
+                logger.info(
+                    "eBay offer POST payload:\n%s",
+                    json.dumps(offer_payload, indent=2)[:4000],
+                )
+            except Exception:
+                pass
+
             offer_response = await client.post(
                 f"{self.BASE_URL}/sell/inventory/v1/offer",
                 headers=headers,
@@ -927,17 +973,61 @@ class EbayConnector(PlatformConnector):
             if offer_response.status_code not in (200, 201):
                 _raise_ebay_error(self.platform, "offer creation", offer_response)
 
-        offer_data = offer_response.json()
-        offer_id = offer_data.get("offerId")
+            offer_data = offer_response.json()
+            offer_id = offer_data.get("offerId")
+
+            # Read back the offer to confirm eBay stored what we sent.
+            readback_offer: dict[str, Any] = {}
+            if offer_id:
+                try:
+                    rb_off = await client.get(
+                        f"{self.BASE_URL}/sell/inventory/v1/offer/{offer_id}",
+                        headers=headers,
+                    )
+                    if rb_off.status_code == 200:
+                        readback_offer = rb_off.json()
+                        logger.info(
+                            "eBay offer GET %s readback:\n%s",
+                            offer_id,
+                            json.dumps(readback_offer, indent=2)[:4000],
+                        )
+                    else:
+                        logger.warning(
+                            "eBay offer readback returned HTTP %d: %s",
+                            rb_off.status_code,
+                            rb_off.text[:500],
+                        )
+                except Exception as exc:  # noqa: BLE001 - diagnostic only
+                    logger.warning("eBay offer readback failed: %s", exc)
+
+        # Build a concise "stored summary" for the UI so the user can see
+        # at a glance whether eBay actually has the rich fields. If these
+        # are populated but Seller Hub's drafts page shows them blank,
+        # it's a Seller Hub UI issue, not our problem.
+        stored_inv_product = readback_inventory.get("product", {}) if readback_inventory else {}
+        stored_summary = {
+            "inventory_title": stored_inv_product.get("title"),
+            "inventory_description_len": len(stored_inv_product.get("description") or ""),
+            "inventory_image_count": len(stored_inv_product.get("imageUrls") or []),
+            "inventory_aspect_count": len(stored_inv_product.get("aspects") or {}),
+            "inventory_condition": readback_inventory.get("condition") if readback_inventory else None,
+            "offer_category_id": (readback_offer.get("categoryId") if readback_offer else None),
+            "offer_description_len": len(readback_offer.get("listingDescription") or "") if readback_offer else 0,
+            "offer_price": (readback_offer.get("pricingSummary") or {}).get("price") if readback_offer else None,
+            "offer_status": readback_offer.get("status") if readback_offer else None,
+        }
+        logger.info("eBay create_draft stored summary: %s", stored_summary)
 
         return {
             "sku": sku,
             "offer_id": offer_id,
-            # eBay drafts live in Seller Hub's drafts section - no
-            # per-offer URL for unpublished items, so we link there.
-            "url": "https://www.ebay.com/sh/lst/drafts",
+            # Inventory API offers don't appear in the legacy Seller Hub
+            # "Drafts" view in full detail. The Inventory/Listings page
+            # is the right place to find them - linking there now.
+            "url": f"https://www.ebay.com/sh/lst/active?action=edit_offer&offerId={offer_id}" if offer_id else "https://www.ebay.com/sh/lst/active",
             "raw_inventory": {"status": inv_response.status_code},
             "raw_offer": offer_data,
+            "stored_summary": stored_summary,
         }
 
     # ------------------------------------------------------------------

@@ -1531,6 +1531,11 @@ async def post_template_to_ebay(template_id: int, payload: dict | None = None) -
         "offer_id": result.get("offer_id"),
         "url": result.get("url"),
         "photo_results": photo_results,
+        # stored_summary tells us what eBay echoed back from the readback
+        # GETs - useful when the API call "succeeds" but Seller Hub shows
+        # an empty draft. If stored_summary has populated fields, the
+        # data is in eBay's system and the issue is just Seller Hub UI.
+        "stored_summary": result.get("stored_summary", {}),
         "policies_used": {
             "fulfillment_policy_id": fulfillment_id,
             "payment_policy_id": payment_id,
