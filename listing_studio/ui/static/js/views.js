@@ -15,6 +15,7 @@
             library: LS.$("library-view"),
             settings: LS.$("settings-view"),
             history: LS.$("history-view"),
+            help: LS.$("help-view"),
         };
 
         for (const [name, el] of Object.entries(views)) {
@@ -24,14 +25,18 @@
         // Update toolbar active state
         const btnSettings = LS.$("btn-settings");
         const btnHistory = LS.$("btn-history");
+        const btnHelp = LS.$("btn-help");
         if (btnSettings) btnSettings.classList.toggle("active", view === "settings");
         if (btnHistory) btnHistory.classList.toggle("active", view === "history");
+        if (btnHelp) btnHelp.classList.toggle("active", view === "help");
 
         // Per-view load
         if (view === "settings" && LS.loadAndRenderSettings) {
             await LS.loadAndRenderSettings();
         } else if (view === "history" && LS.loadAndRenderHistory) {
             await LS.loadAndRenderHistory();
+        } else if (view === "help" && LS.renderHelp) {
+            LS.renderHelp();
         }
     };
 })();

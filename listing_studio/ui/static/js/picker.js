@@ -132,6 +132,7 @@
         footer.appendChild(closeBtn);
         card.appendChild(footer);
         backdrop.appendChild(card);
+        LS.attachModalCloseButton(card, backdrop, () => { closePicker(); return false; });
         document.body.appendChild(backdrop);
     }
 

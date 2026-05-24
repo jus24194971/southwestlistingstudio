@@ -140,7 +140,7 @@ above the search results.
 
 ## eBay credentials (the two-tier story)
 
-eBay has two distinct token types:
+eBay has two distinct token types, both implemented in v0.5.0:
 
 - **App token** (`client_credentials` grant from the developer app's
   `client_id` + `client_secret`). Read-only; works for the taxonomy API
@@ -148,8 +148,62 @@ eBay has two distinct token types:
   No user consent required. The category picker uses this exclusively.
 - **User token** (`authorization_code` grant via OAuth redirect). Tied to
   Dad's actual eBay seller account; required for inventory/listing
-  endpoints. Stored in the keyring alongside the app credentials. Not
-  yet implemented — that lands with the eBay posting flow.
+  endpoints. Stored in the keyring alongside the app credentials.
+  Refresh logic is automatic — `_get_user_token()` checks expiry and
+  refreshes via the refresh_token if needed (60s safety buffer).
+
+### eBay OAuth flow (browser-based)
+
+1. **Settings → eBay → Connect** opens `openEbayConnectModal` in
+   settings.js. The modal collects `client_id`, `client_secret`, and
+   `ru_name` (RuName — eBay's registered redirect identifier).
+2. Step 1 POSTs to `/api/settings/platforms/ebay/connect`. The backend
+   validates by fetching an app token, then stores the three fields.
+3. Step 2's "Authorize Seller Account" button calls
+   `/api/ebay/oauth/start`, which constructs the authorize URL (using
+   the RuName as `redirect_uri`, not a real URL) and opens the system
+   browser via Python's `webbrowser` module.
+4. The user logs in to eBay and approves. eBay redirects to the URL
+   associated with the RuName in eBay's dashboard — configured to be
+   `http://localhost:8731/api/ebay/oauth/callback`.
+5. The callback endpoint exchanges the `code` query param for
+   access_token + refresh_token via `EbayConnector.exchange_code_for_tokens`,
+   stores them in the credentials blob, and returns a styled HTML "you
+   can close this tab" page.
+6. The modal polls `/api/settings/platforms/ebay/oauth-status` every
+   2 seconds until `has_user_token: true`, then transforms to show
+   the "Done" button.
+
+The RuName-to-URL mapping is configured in eBay's developer dashboard,
+NOT in our code. If we ever change the callback URL we have to update
+the eBay side too.
+
+Credentials blob shape after a full connect + authorize:
+
+```
+{
+    "client_id":  "...",
+    "client_secret": "...",
+    "ru_name": "...",
+    "user_access_token":  "...",   # 2hr lifetime
+    "user_refresh_token": "...",   # 18mo lifetime
+    "user_token_expires_at": "ISO timestamp",
+    "user_refresh_expires_at": "ISO timestamp",
+    "account_label": "<eBay seller username>"
+}
+```
+
+## In-app Help view (v0.5.0+)
+
+`ui/static/js/help.js` defines a SECTIONS array — each entry is one
+help topic with `{id, icon, title, subtitle, content}`. The TOC and
+content pane both render from this array, so adding a new help section
+means appending one object. Content is HTML; keep it self-contained and
+use the `.help-*` classes from `css/help.css` for styling (callouts,
+step lists, Q&A blocks).
+
+When you add a feature elsewhere in the app, add a help section here
+too — Dad uses this when he's stuck.
 
 The keyring blob shape:
 ```

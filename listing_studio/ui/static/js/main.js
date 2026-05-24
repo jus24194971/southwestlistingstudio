@@ -38,8 +38,17 @@
     }
 
     function wireToolbar() {
+        LS.$("btn-help").addEventListener("click", () => LS.showView("help"));
         LS.$("btn-history").addEventListener("click", () => LS.showView("history"));
         LS.$("btn-settings").addEventListener("click", () => LS.showView("settings"));
+        // Clicking the brand block (logo + product name) always returns to the
+        // Library view. Gives Dad a universal escape hatch even if a future
+        // view forgets its "← Back to Library" button.
+        const brand = document.querySelector(".brand");
+        if (brand) {
+            brand.addEventListener("click", () => LS.showView("library"));
+            brand.setAttribute("title", "Click to return to the Library");
+        }
         // Note: the "New Template" / "New Category" buttons are rendered by
         // library.js into the sidebar footer and wire their own click handlers.
         // We used to have a static btn-new-template here too, but it's been

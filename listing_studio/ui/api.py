@@ -305,6 +305,200 @@ async def connect_reverb(payload: dict) -> dict:
     return await _connect_with_api_key(Platform.REVERB, payload)
 
 
+@app.post("/api/settings/platforms/ebay/connect")
+async def connect_ebay(payload: dict) -> dict:
+    """Save eBay app credentials and verify them.
+
+    Body shape (all three required):
+        {
+            "client_id":     "...",  // App ID from the eBay dev dashboard
+            "client_secret": "...",  // Cert ID
+            "ru_name":       "..."   // Redirect User Name (associated with our
+                                      // localhost callback URL in eBay's dashboard)
+        }
+
+    Verifies the client_id/secret by fetching an app-only OAuth token.
+    The user OAuth dance (which authorizes Dad's actual seller account) is
+    a separate step: GET /api/ebay/oauth/start, callback at
+    /api/ebay/oauth/callback. Until that runs, the eBay connection is
+    "app-only" and lets us read the taxonomy but not post listings.
+    """
+    from listing_studio.core.credentials import (
+        clear_credentials,
+        store_credentials,
+    )
+    from listing_studio.platforms.ebay import EbayConnector
+
+    client_id = (payload.get("client_id") or "").strip()
+    client_secret = (payload.get("client_secret") or "").strip()
+    ru_name = (payload.get("ru_name") or "").strip()
+
+    if not client_id or not client_secret or not ru_name:
+        raise HTTPException(400, "All three fields (client_id, client_secret, ru_name) are required")
+
+    # Save first so the connector can read them during the test
+    try:
+        store_credentials(Platform.EBAY, {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "ru_name": ru_name,
+        })
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+    connector = EbayConnector()
+    ok, label_or_error = await connector.test_connection()
+
+    if not ok:
+        clear_credentials(Platform.EBAY)
+        raise HTTPException(400, f"eBay rejected the credentials: {label_or_error}")
+
+    # Save with the label that the test produced; keep the three input fields.
+    store_credentials(Platform.EBAY, {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "ru_name": ru_name,
+        "account_label": label_or_error,
+    })
+    return {
+        "is_connected": True,
+        "account_label": label_or_error,
+        "has_user_token": False,
+        "next_step": "Authorize Dad's seller account via /api/ebay/oauth/start",
+    }
+
+
+@app.get("/api/settings/platforms/ebay/oauth-status")
+async def ebay_oauth_status() -> dict:
+    """Quick poll endpoint for the UI's "Waiting for callback..." spinner.
+
+    Returns whether a user token is currently stored (the OAuth callback
+    completed) and the account label so the UI can update without
+    reloading the whole platforms list.
+    """
+    from listing_studio.core.credentials import load_credentials
+    from listing_studio.platforms.ebay import EbayConnector
+
+    connector = EbayConnector()
+    stored = load_credentials(Platform.EBAY) or {}
+    return {
+        "app_connected": await connector.is_connected(),
+        "has_user_token": connector.has_user_token(),
+        "account_label": stored.get("account_label"),
+    }
+
+
+@app.get("/api/ebay/oauth/start")
+async def ebay_oauth_start() -> dict:
+    """Open the eBay consent screen in the user's default browser.
+
+    Constructs the authorize URL from the stored client_id + ru_name and
+    opens it via the OS browser handler. Returns immediately - the actual
+    redirect comes back to /api/ebay/oauth/callback later (potentially
+    minutes later if Dad takes his time on the consent screen).
+
+    Response shape:
+        {"opened": true, "url": "https://auth.ebay.com/oauth2/authorize?..."}
+    """
+    import webbrowser
+
+    from listing_studio.platforms.ebay import EbayConnector
+
+    connector = EbayConnector()
+    auth_url = connector.build_authorize_url()
+    if not auth_url:
+        raise HTTPException(400, "eBay app credentials not configured. Connect first.")
+
+    try:
+        opened = webbrowser.open(auth_url, new=2)  # new=2 means new tab if possible
+    except Exception as exc:  # noqa: BLE001 - webbrowser is platform-dependent
+        import logging
+        logging.getLogger(__name__).warning("Couldn't open browser for eBay OAuth: %s", exc)
+        opened = False
+
+    return {"opened": bool(opened), "url": auth_url}
+
+
+@app.get("/api/ebay/oauth/callback")
+async def ebay_oauth_callback(code: str | None = None, error: str | None = None):
+    """Handle eBay's redirect after Dad approves (or denies) the consent.
+
+    eBay redirects here with ``?code=XXXX`` (success) or ``?error=...``
+    (failure). On success we exchange the code for user tokens and store
+    them. Returns an HTML page that tells Dad to close the tab and switch
+    back to Listing Studio - the running app will see the stored tokens
+    on its next poll of /api/settings/platforms.
+
+    This endpoint exists because eBay's RuName-to-URL mapping is configured
+    in the dev dashboard to point at http://localhost:8731/api/ebay/oauth/callback.
+    """
+    from fastapi.responses import HTMLResponse
+
+    if error:
+        body = f"<h1>eBay authorization failed</h1><p>{error}</p>"
+        return HTMLResponse(_oauth_result_page(False, body), status_code=400)
+    if not code:
+        return HTMLResponse(_oauth_result_page(False, "<h1>Missing code parameter</h1>"), status_code=400)
+
+    from listing_studio.platforms.base import PostingError
+    from listing_studio.platforms.ebay import EbayConnector
+
+    connector = EbayConnector()
+    try:
+        merged = await connector.exchange_code_for_tokens(code)
+    except PostingError as exc:
+        return HTMLResponse(
+            _oauth_result_page(False, f"<h1>Couldn't exchange code</h1><p>{exc}</p>"),
+            status_code=400,
+        )
+
+    label = merged.get("account_label") or "eBay seller"
+    body = f"""
+        <h1>✓ Connected to eBay</h1>
+        <p>Authorized as <strong>{label}</strong>.</p>
+        <p>You can close this tab and return to Listing Studio - the app will pick up the new tokens automatically.</p>
+    """
+    return HTMLResponse(_oauth_result_page(True, body))
+
+
+def _oauth_result_page(ok: bool, body: str) -> str:
+    """Wrap the OAuth callback result in a styled HTML shell.
+
+    Kept self-contained (no external CSS) so the page works even if the
+    user's browser has lost connection to the embedded server.
+    """
+    accent = "#7a9d4f" if ok else "#c85a3c"
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Listing Studio - eBay OAuth</title>
+    <style>
+        body {{
+            background: #1B1813;
+            color: #d4cfc4;
+            font-family: -apple-system, system-ui, sans-serif;
+            margin: 0;
+            display: grid;
+            place-items: center;
+            min-height: 100vh;
+        }}
+        .card {{
+            background: #2a2520;
+            padding: 32px 40px;
+            border-radius: 6px;
+            border: 1px solid {accent};
+            max-width: 480px;
+        }}
+        h1 {{ color: {accent}; font-weight: 500; margin-top: 0; }}
+        p {{ line-height: 1.6; }}
+        code {{ background: #1B1813; padding: 2px 6px; border-radius: 3px; }}
+    </style>
+</head>
+<body><div class="card">{body}</div></body>
+</html>"""
+
+
 async def _connect_with_api_key(platform: Platform, payload: dict) -> dict:
     """Shared logic for platforms that use bearer-token auth.
 

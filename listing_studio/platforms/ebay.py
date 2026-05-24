@@ -43,8 +43,9 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -59,6 +60,23 @@ logger = logging.getLogger(__name__)
 # US default category tree. eBay maintains separate trees per marketplace
 # (US, UK, DE, etc.); for Southwest Acoustics we only care about US.
 EBAY_US_TREE_ID = "0"
+
+# OAuth scopes required for the selling flows we plan to support. Reads
+# come "free" with the app token; user tokens are needed for inventory,
+# offers, and order/fulfillment data.
+EBAY_USER_SCOPES = [
+    "https://api.ebay.com/oauth/api_scope",
+    "https://api.ebay.com/oauth/api_scope/sell.inventory",
+    "https://api.ebay.com/oauth/api_scope/sell.account.readonly",
+    "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
+]
+
+# eBay's OAuth endpoints. Auth happens on auth.ebay.com (consent UI);
+# token exchange happens on api.ebay.com (REST). Both are production -
+# the sandbox equivalents have a `.sandbox.` infix but we're not using
+# sandbox per the v0.4.0 decision.
+EBAY_OAUTH_AUTHORIZE_URL = "https://auth.ebay.com/oauth2/authorize"
+EBAY_OAUTH_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 
 
 class EbayConnector(PlatformConnector):
@@ -172,6 +190,253 @@ class EbayConnector(PlatformConnector):
             "Accept": "application/json",
             "User-Agent": self.USER_AGENT,
         }
+
+    # ------------------------------------------------------------------
+    # User OAuth (separate from the app token used for taxonomy reads)
+    # ------------------------------------------------------------------
+
+    def has_user_token(self) -> bool:
+        """True if a user OAuth token has been stored.
+
+        Listing creation (Inventory, Offer, Publish) requires a user token,
+        which only arrives after Dad completes the OAuth consent flow in
+        his browser. The category picker works without it.
+        """
+        stored = creds.load_credentials(self.platform)
+        if stored is None:
+            return False
+        return bool(stored.get("user_access_token"))
+
+    def build_authorize_url(self, state: str | None = None) -> str | None:
+        """Construct the eBay OAuth authorize URL the user gets sent to.
+
+        eBay uses the **RuName** (registered redirect name) as the
+        ``redirect_uri`` parameter - not the actual URL. The mapping from
+        RuName to URL lives in the eBay developer dashboard. For Listing
+        Studio the RuName resolves to http://localhost:8731/api/ebay/oauth/callback.
+
+        Returns None if app credentials or RuName are missing - the UI
+        should disable the "Authorize" button in that state.
+        """
+        stored = creds.load_credentials(self.platform)
+        if not stored:
+            return None
+        client_id = stored.get("client_id")
+        ru_name = stored.get("ru_name")
+        if not client_id or not ru_name:
+            return None
+
+        params = {
+            "client_id": client_id,
+            "redirect_uri": ru_name,
+            "response_type": "code",
+            "scope": " ".join(EBAY_USER_SCOPES),
+            "prompt": "login",  # Always ask for sign-in; avoids picking up the wrong account
+        }
+        if state:
+            params["state"] = state
+        return f"{EBAY_OAUTH_AUTHORIZE_URL}?{urlencode(params)}"
+
+    async def exchange_code_for_tokens(self, code: str) -> dict[str, Any]:
+        """Trade an OAuth authorization code for access + refresh tokens.
+
+        Called by the /api/ebay/oauth/callback endpoint right after eBay
+        sends Dad's browser back to us with ?code=XXXX. On success, stores
+        the tokens in the eBay credentials blob alongside the app creds.
+
+        Returns the new credentials blob (for the caller to log/echo).
+        Raises PostingError on failure with a human-readable message.
+        """
+        app = self._get_app_creds()
+        if not app:
+            raise PostingError(self.platform, "Missing app credentials", is_auth_error=True)
+        client_id, client_secret = app
+
+        stored = creds.load_credentials(self.platform) or {}
+        ru_name = stored.get("ru_name")
+        if not ru_name:
+            raise PostingError(self.platform, "Missing RuName", is_auth_error=True)
+
+        basic = base64.b64encode(f"{client_id}:{client_secret}".encode("ascii")).decode("ascii")
+
+        try:
+            async with httpx.AsyncClient(timeout=self.TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    EBAY_OAUTH_TOKEN_URL,
+                    headers={
+                        "Authorization": f"Basic {basic}",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "User-Agent": self.USER_AGENT,
+                    },
+                    data={
+                        "grant_type": "authorization_code",
+                        "code": code,
+                        "redirect_uri": ru_name,
+                    },
+                )
+        except httpx.RequestError as exc:
+            raise PostingError(
+                self.platform, f"Network error during token exchange: {exc}",
+            ) from exc
+
+        if response.status_code != 200:
+            raise PostingError(
+                self.platform,
+                f"eBay rejected the authorization code ({response.status_code}): {response.text[:300]}",
+                is_auth_error=True,
+            )
+
+        data = response.json()
+        access_token = data.get("access_token")
+        refresh_token = data.get("refresh_token")
+        expires_in = int(data.get("expires_in", 7200))
+
+        if not access_token or not refresh_token:
+            raise PostingError(self.platform, "eBay token response missing tokens")
+
+        # Compute absolute expiry timestamps for both tokens.
+        access_expires_at = (datetime.now() + timedelta(seconds=expires_in)).isoformat()
+        # eBay's refresh tokens are valid 18 months; we don't strictly need
+        # to track expiry but it's useful for "you need to re-authorize" UI
+        # someday.
+        refresh_expires_at = (
+            datetime.now() + timedelta(seconds=int(data.get("refresh_token_expires_in", 47304000)))
+        ).isoformat()
+
+        # Try to fetch the seller's user ID for a nice account label. Not
+        # fatal if it fails - we have the token, that's the important bit.
+        account_label = "eBay seller"
+        try:
+            label = await self._fetch_seller_username(access_token)
+            if label:
+                account_label = label
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Couldn't fetch eBay seller label: %s", exc)
+
+        merged = {
+            **stored,
+            "user_access_token": access_token,
+            "user_refresh_token": refresh_token,
+            "user_token_expires_at": access_expires_at,
+            "user_refresh_expires_at": refresh_expires_at,
+            "account_label": account_label,
+        }
+        creds.store_credentials(self.platform, merged)
+        return merged
+
+    async def _refresh_user_token(self, client: httpx.AsyncClient) -> str:
+        """Use the stored refresh token to get a fresh access token.
+
+        Returns the new access token (also persists it in the credentials
+        blob). Raises PostingError if no refresh token is stored or the
+        refresh request fails.
+        """
+        stored = creds.load_credentials(self.platform) or {}
+        refresh = stored.get("user_refresh_token")
+        if not refresh:
+            raise PostingError(
+                self.platform,
+                "No refresh token stored - the seller account needs to re-authorize.",
+                is_auth_error=True,
+            )
+
+        app = self._get_app_creds()
+        if not app:
+            raise PostingError(self.platform, "Missing app credentials")
+        client_id, client_secret = app
+        basic = base64.b64encode(f"{client_id}:{client_secret}".encode("ascii")).decode("ascii")
+
+        response = await client.post(
+            EBAY_OAUTH_TOKEN_URL,
+            headers={
+                "Authorization": f"Basic {basic}",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": self.USER_AGENT,
+            },
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh,
+                "scope": " ".join(EBAY_USER_SCOPES),
+            },
+        )
+
+        if response.status_code != 200:
+            raise PostingError(
+                self.platform,
+                f"eBay refresh failed ({response.status_code}): {response.text[:200]}",
+                is_auth_error=True,
+            )
+
+        data = response.json()
+        new_access = data.get("access_token")
+        if not new_access:
+            raise PostingError(self.platform, "eBay refresh response missing access_token")
+
+        expires_in = int(data.get("expires_in", 7200))
+        new_expiry = (datetime.now() + timedelta(seconds=expires_in)).isoformat()
+
+        merged = {
+            **stored,
+            "user_access_token": new_access,
+            "user_token_expires_at": new_expiry,
+        }
+        creds.store_credentials(self.platform, merged)
+        return new_access
+
+    async def _get_user_token(self, client: httpx.AsyncClient) -> str:
+        """Return a usable user access token, refreshing if expired.
+
+        Called by any code path that needs to act on the seller's behalf
+        (inventory, offers, order reads).
+        """
+        stored = creds.load_credentials(self.platform) or {}
+        access = stored.get("user_access_token")
+        expires_at = stored.get("user_token_expires_at")
+
+        if not access:
+            raise PostingError(
+                self.platform,
+                "Seller account not authorized. Connect via Settings → eBay → Authorize Seller Account.",
+                is_auth_error=True,
+            )
+
+        # Refresh if within 60s of expiry (safety buffer) or no expiry recorded
+        needs_refresh = False
+        if not expires_at:
+            needs_refresh = True
+        else:
+            try:
+                expiry_dt = datetime.fromisoformat(expires_at)
+                if (expiry_dt - datetime.now()).total_seconds() < 60:
+                    needs_refresh = True
+            except ValueError:
+                needs_refresh = True
+
+        if needs_refresh:
+            access = await self._refresh_user_token(client)
+
+        return access
+
+    async def _fetch_seller_username(self, access_token: str) -> str | None:
+        """Pull the seller's username/ID for use as an account label."""
+        try:
+            async with httpx.AsyncClient(timeout=self.TIMEOUT_SECONDS) as client:
+                response = await client.get(
+                    f"{self.BASE_URL}/commerce/identity/v1/user/",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "User-Agent": self.USER_AGENT,
+                    },
+                )
+        except httpx.RequestError:
+            return None
+        if response.status_code != 200:
+            return None
+        try:
+            data = response.json()
+        except Exception:
+            return None
+        return data.get("username") or data.get("userId")
 
     # ------------------------------------------------------------------
     # Connection test

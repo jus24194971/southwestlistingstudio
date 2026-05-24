@@ -16,6 +16,7 @@
 }
 
 .modal-card {
+    position: relative;             /* anchor for the .modal-close-x corner button */
     background: var(--bg-shell);
     border: 1px solid #050402;
     border-radius: 10px;
@@ -26,6 +27,34 @@
     max-height: 85vh;
     overflow-y: auto;
     padding: 28px 32px;
+}
+
+/* Universal modal close button - top-right corner of every modal card.
+   Added via LS.attachModalCloseButton() in api.js. Backdrop click and any
+   in-modal Cancel/Done button still work too; the × is just a third
+   always-visible escape hatch so the close pattern is consistent. */
+.modal-close-x {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    width: 30px;
+    height: 30px;
+    background: transparent;
+    border: none;
+    color: var(--ink-3);
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    transition: background 0.12s ease, color 0.12s ease;
+    z-index: 1;       /* keep above any sticky modal headers */
+}
+
+.modal-close-x:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--ink);
 }
 
 .modal-card h2 {

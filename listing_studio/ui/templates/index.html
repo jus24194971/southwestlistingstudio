@@ -17,6 +17,7 @@
     <link rel="stylesheet" href="/static/css/picker.css">
     <link rel="stylesheet" href="/static/css/results.css">
     <link rel="stylesheet" href="/static/css/updates.css">
+    <link rel="stylesheet" href="/static/css/help.css">
 </head>
 <body>
 
@@ -40,6 +41,7 @@
                 <div class="conn-dot"></div>
                 <div class="conn-text">Loading…</div>
             </div>
+            <button class="tool-btn" id="btn-help" title="In-app guide and troubleshooting">Help</button>
             <button class="tool-btn" id="btn-history">History</button>
             <button class="tool-btn" id="btn-settings">Settings</button>
         </div>
@@ -86,6 +88,11 @@
             <!-- Populated by history.js -->
         </div>
 
+        <!-- HELP VIEW -->
+        <div id="help-view" style="display: none;">
+            <!-- Populated by help.js -->
+        </div>
+
     </div>
 
     <!-- Status bar -->
@@ -112,6 +119,7 @@
 <script src="/static/js/updates.js"></script>
 <script src="/static/js/categories.js"></script>
 <script src="/static/js/new_template.js"></script>
+<script src="/static/js/help.js"></script>
 <script src="/static/js/main.js"></script>
 </body>
 </html>
