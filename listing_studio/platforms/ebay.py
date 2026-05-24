@@ -654,6 +654,73 @@ class EbayConnector(PlatformConnector):
 
             return results
 
+    async def create_merchant_location(
+        self,
+        key: str,
+        name: str,
+        address_line_1: str,
+        city: str,
+        state_or_province: str,
+        postal_code: str,
+        country: str = "US",
+        address_line_2: str | None = None,
+        location_type: str = "WAREHOUSE",
+    ) -> None:
+        """Create (or upsert) an inventory location on eBay.
+
+        eBay's Inventory API requires every offer to reference a
+        ``merchantLocationKey`` that's been registered for the seller.
+        Many sellers don't have one because eBay's Seller Hub doesn't
+        always expose a UI for this - the construct is API-only. This
+        method lets the app create one directly so Dad doesn't have to
+        wrestle with eBay's API Explorer.
+
+        Args match eBay's address shape (US-only here; international
+        would add region/county). Raises PostingError on failure.
+        """
+        if not self.has_user_token():
+            raise PostingError(
+                self.platform,
+                "Seller account not authorized.",
+                is_auth_error=True,
+            )
+
+        address: dict[str, str] = {
+            "addressLine1": address_line_1,
+            "city": city,
+            "stateOrProvince": state_or_province,
+            "postalCode": postal_code,
+            "country": country,
+        }
+        if address_line_2:
+            address["addressLine2"] = address_line_2
+
+        payload = {
+            "location": {"address": address},
+            "name": name,
+            "merchantLocationStatus": "ENABLED",
+            "locationTypes": [location_type],
+        }
+
+        async with httpx.AsyncClient(timeout=self.TIMEOUT_SECONDS) as client:
+            token = await self._get_user_token(client)
+            # POST to /location/{key} - eBay treats this as upsert by key.
+            response = await client.post(
+                f"{self.BASE_URL}/sell/inventory/v1/location/{key}",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "Content-Language": "en-US",
+                    "Accept": "application/json",
+                    "User-Agent": self.USER_AGENT,
+                },
+                json=payload,
+            )
+
+        # eBay returns 204 No Content on success
+        if response.status_code not in (200, 201, 204):
+            _raise_ebay_error(self.platform, "location creation", response)
+
     async def fetch_merchant_locations(self) -> list[dict]:
         """Return the seller's inventory locations.
 

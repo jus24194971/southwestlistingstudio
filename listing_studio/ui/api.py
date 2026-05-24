@@ -1304,6 +1304,58 @@ async def search_ebay_taxonomy(q: str = "", limit: int = 30) -> list[dict]:
     return matches
 
 
+@app.post("/api/platforms/ebay/locations")
+async def create_ebay_location(payload: dict) -> dict:
+    """Create an eBay inventory (merchant) location.
+
+    Required fields in payload:
+        key                  - merchantLocationKey (URL-safe identifier, e.g. "main")
+        name                 - human-readable name
+        address_line_1       - street address
+        city                 - city
+        state_or_province    - 2-letter state for US (e.g. "AZ")
+        postal_code          - ZIP / postal code
+
+    Optional:
+        country              - 2-letter code, defaults to "US"
+        address_line_2       - apt/suite
+        location_type        - "WAREHOUSE" (default) or "STORE"
+
+    Returns {"ok": true, "key": "..."} on success. Lets the user set up
+    the location eBay requires for offers without needing to use eBay's
+    API Explorer or hunt through Seller Hub.
+    """
+    from listing_studio.platforms.base import PostingError
+    from listing_studio.platforms.ebay import EbayConnector
+
+    required = ("key", "name", "address_line_1", "city",
+                "state_or_province", "postal_code")
+    missing = [f for f in required if not payload.get(f)]
+    if missing:
+        raise HTTPException(400, f"Missing required field(s): {', '.join(missing)}")
+
+    connector = EbayConnector()
+    if not connector.has_user_token():
+        raise HTTPException(400, "eBay seller account not authorized. Connect via Settings → eBay first.")
+
+    try:
+        await connector.create_merchant_location(
+            key=payload["key"],
+            name=payload["name"],
+            address_line_1=payload["address_line_1"],
+            city=payload["city"],
+            state_or_province=payload["state_or_province"],
+            postal_code=payload["postal_code"],
+            country=payload.get("country", "US"),
+            address_line_2=payload.get("address_line_2"),
+            location_type=payload.get("location_type", "WAREHOUSE"),
+        )
+    except PostingError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    return {"ok": True, "key": payload["key"]}
+
+
 @app.get("/api/platforms/ebay/policies")
 async def get_ebay_policies() -> dict:
     """Return Dad's eBay business policies + merchant locations.

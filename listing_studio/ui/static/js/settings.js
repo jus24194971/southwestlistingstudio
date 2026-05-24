@@ -360,6 +360,19 @@
                 }
             });
             actions.appendChild(disconnectBtn);
+
+            // eBay-only: a button to create the merchant inventory location.
+            // eBay's Inventory API requires every offer to reference one of
+            // these, but eBay's Seller Hub doesn't always expose a UI for
+            // creating them. We POST to /sell/inventory/v1/location/{key}
+            // directly via our API endpoint so Dad doesn't have to wrestle
+            // with eBay's API Explorer.
+            if (platform === "ebay") {
+                const locBtn = LS.el("button", "btn-secondary-sm", "Set up location");
+                locBtn.title = "Create or update the eBay inventory location that offers reference";
+                locBtn.addEventListener("click", () => openEbayLocationModal());
+                actions.appendChild(locBtn);
+            }
         } else {
             const connectBtn = LS.el("button", "btn-connect", "Connect");
             connectBtn.addEventListener("click", () => {
@@ -1160,6 +1173,135 @@
     //         a user token shows up (or the user gives up and closes the
     //         modal).
     // ----------------------------------------------------------------------
+
+    // ----------------------------------------------------------------------
+    // eBay inventory location wizard
+    //
+    // eBay's Seller Hub doesn't always expose a UI for creating inventory
+    // locations (the construct the Inventory API requires every offer to
+    // reference). This modal lets the user create or update one directly
+    // via /api/platforms/ebay/locations.
+    // ----------------------------------------------------------------------
+
+    function openEbayLocationModal() {
+        const backdrop = LS.el("div", "modal-backdrop");
+        const card = LS.el("div", "modal-card");
+        card.style.maxWidth = "560px";
+        card.style.maxHeight = "85vh";
+        card.style.overflowY = "auto";
+
+        const h2 = LS.el("h2");
+        h2.innerHTML = `eBay <em>inventory location</em>`;
+        card.appendChild(h2);
+
+        card.appendChild(LS.el("div", "modal-sub",
+            "eBay requires every offer to reference an inventory location " +
+            "(where items ship from). Create one here; eBay treats subsequent " +
+            "submissions with the same Location Key as an update."));
+
+        // Form
+        const form = LS.el("div");
+        form.style.marginTop = "16px";
+
+        function row(label, name, placeholder, defaultValue) {
+            const wrap = LS.el("div");
+            wrap.style.marginBottom = "12px";
+            const lab = LS.el("label");
+            lab.style.display = "block";
+            lab.style.fontSize = "11px";
+            lab.style.color = "var(--ink-3)";
+            lab.style.textTransform = "uppercase";
+            lab.style.letterSpacing = "0.08em";
+            lab.style.marginBottom = "5px";
+            lab.textContent = label;
+            wrap.appendChild(lab);
+
+            const input = LS.el("input");
+            input.name = name;
+            input.placeholder = placeholder || "";
+            if (defaultValue) input.value = defaultValue;
+            input.style.cssText = "width: 100%; background: var(--bg-input); border: 1px solid var(--line); border-radius: 4px; padding: 10px 12px; color: var(--ink); font-family: var(--font-mono); font-size: 12px;";
+            wrap.appendChild(input);
+            return wrap;
+        }
+
+        form.appendChild(row("Location Key (internal identifier)", "key",
+            "e.g. main", "main"));
+        form.appendChild(row("Display name", "name", "e.g. Tucson Workshop"));
+        form.appendChild(row("Street address", "address_line_1", "e.g. 123 Main St"));
+        form.appendChild(row("Apt / Suite (optional)", "address_line_2", ""));
+        form.appendChild(row("City", "city", "e.g. Tucson"));
+        form.appendChild(row("State (2-letter)", "state_or_province", "e.g. AZ"));
+        form.appendChild(row("Postal code", "postal_code", "e.g. 85710"));
+        form.appendChild(row("Country (2-letter)", "country", "US", "US"));
+
+        card.appendChild(form);
+
+        const status = LS.el("div");
+        status.style.minHeight = "20px";
+        status.style.marginTop = "10px";
+        status.style.fontSize = "12px";
+        status.style.fontFamily = "var(--font-mono)";
+        card.appendChild(status);
+
+        const footer = LS.el("div", "modal-footer-bar");
+        footer.style.marginTop = "16px";
+
+        const cancelBtn = LS.el("button", "btn-ghost", "Cancel");
+        cancelBtn.addEventListener("click", () => backdrop.remove());
+        footer.appendChild(cancelBtn);
+
+        const saveBtn = LS.el("button", "btn-update-now", "Create / update location");
+        saveBtn.addEventListener("click", async () => {
+            const payload = {};
+            form.querySelectorAll("input[name]").forEach(i => {
+                const v = i.value.trim();
+                if (v) payload[i.name] = v;
+            });
+
+            const required = ["key", "name", "address_line_1", "city",
+                              "state_or_province", "postal_code"];
+            const missing = required.filter(k => !payload[k]);
+            if (missing.length > 0) {
+                status.style.color = "var(--rust-bright)";
+                status.textContent = "Missing: " + missing.join(", ");
+                return;
+            }
+
+            saveBtn.disabled = true;
+            cancelBtn.disabled = true;
+            status.style.color = "var(--ink-3)";
+            status.textContent = "Submitting to eBay…";
+
+            try {
+                const result = await LS.api("POST",
+                    "/api/platforms/ebay/locations", payload);
+                status.style.color = "var(--moss-bright)";
+                status.textContent = `✓ Location "${result.key}" saved on eBay`;
+                setTimeout(() => backdrop.remove(), 1500);
+            } catch (err) {
+                status.style.color = "var(--rust-bright)";
+                status.textContent = err.message || "Failed";
+                saveBtn.disabled = false;
+                cancelBtn.disabled = false;
+            }
+        });
+        footer.appendChild(saveBtn);
+
+        card.appendChild(footer);
+
+        backdrop.appendChild(card);
+        backdrop.addEventListener("click", e => {
+            if (e.target === backdrop) backdrop.remove();
+        });
+        LS.attachModalCloseButton(card, backdrop);
+        document.body.appendChild(backdrop);
+
+        setTimeout(() => {
+            const first = form.querySelector("input[name='name']");
+            if (first) first.focus();
+        }, 50);
+    }
 
     function openEbayConnectModal() {
         const backdrop = LS.el("div", "modal-backdrop");
