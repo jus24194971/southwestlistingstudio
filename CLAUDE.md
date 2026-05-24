@@ -222,6 +222,52 @@ The keyring blob shape:
 `client_secret` are present — the minimum-viable state for taxonomy
 reads. Posting will additionally require the user tokens.
 
+## Accessibility (v0.5.3+)
+
+Two preferences live in the `preferences` table and feed CSS rules in
+`ui/static/css/base.css`:
+
+- `font_scale` (`"normal"` / `"large"` / `"xlarge"`) — applied as a CSS
+  `zoom` on `<body>`. Chromium's `zoom` scales every nested px-value at
+  once, avoiding the need to refactor every stylesheet to use rem.
+- `high_contrast` (bool) — adds `.high-contrast` class on `<body>`. The
+  class override block in base.css remaps the brand token vars to a
+  brighter palette (white instead of cream, sharper gold).
+
+Both prefs are applied at boot in `main.js`'s `applyAccessibilityPrefs()`
+function. Settings page exposes them in a top-of-page Accessibility
+section. Toggling in Settings re-applies immediately without a reload.
+
+## Backup / Transfer (.sals file, v0.5.3+)
+
+`core/backup.py` exposes `export_backup(session, include_credentials)`
+and `import_backup(session, bytes)`. The file format is a ZIP archive
+with these entries:
+
+```
+manifest.json          - format_version, app_version, exported_at, contents map
+templates.json         - every Template + photos (paths only) + tag links
+categories.json        - every Category w/ Reverb/eBay/Squarespace mappings
+category_mappings.json - learned + shipped pairings
+category_usage.json    - recent-used tracking
+tags.json              - tag dictionary
+preferences.json       - DB-stored prefs
+credentials.json       - (optional) API tokens, when include_credentials=True
+```
+
+Photo files themselves are NOT bundled — only their `source_path` strings.
+On the same NAS, photos reattach automatically; on a different machine
+the user re-picks them via the local file dialog.
+
+Import is destructive (wipes all user data before insert). The UI's
+import modal auto-triggers a current-state export first as a safety
+backup. The `BACKUP_FORMAT_VERSION` constant guards against importing
+files from newer app versions than this build supports.
+
+No encryption in v1. Future versions can add Fernet+passphrase by
+appending an `encrypted.json` to the archive and gating credentials
+restore on the passphrase, without breaking the file format.
+
 ## Drafts only, for now
 
 Every posting flow currently creates **drafts**, not live listings. Dad

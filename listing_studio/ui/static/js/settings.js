@@ -57,6 +57,12 @@
         header.appendChild(backBtn);
         container.appendChild(header);
 
+        // Accessibility section - intentionally first so it's findable
+        container.appendChild(buildAccessibilityBlock());
+
+        // Backup & Transfer section
+        container.appendChild(buildBackupBlock());
+
         // Platforms section
         const platformsBlock = LS.el("div", "section-block");
         platformsBlock.appendChild(buildSectionTitle("Auto-posting platforms"));
@@ -376,6 +382,370 @@
 
         card.appendChild(body);
         return card;
+    }
+
+    // ----------------------------------------------------------------------
+    // Accessibility section (added v0.5.3)
+    //
+    // Two controls that materially change app legibility for Dad:
+    //   - Font size: applied as a CSS zoom on <body>
+    //   - High contrast: swaps in a brighter palette via .high-contrast class
+    // Both persist as preferences; main.js re-applies them on every boot.
+    // ----------------------------------------------------------------------
+
+    function buildAccessibilityBlock() {
+        const block = LS.el("div", "section-block");
+        block.appendChild(buildSectionTitle("Accessibility"));
+        block.appendChild(LS.el("div", "section-help",
+            "Adjust how text and colors render. Both settings save automatically and apply across the whole app."));
+
+        // Font size selector - radio-style buttons for click-to-set
+        const row1 = LS.el("div", "pref-row");
+        const info1 = LS.el("div", "pref-info");
+        info1.appendChild(LS.el("div", "pref-label", "Text size"));
+        info1.appendChild(LS.el("div", "pref-help",
+            "Larger sizes scale every screen up. Use Extra Large if standard text strains your eyes."));
+        row1.appendChild(info1);
+
+        const sizeControl = LS.el("div", "pref-control");
+        sizeControl.style.display = "flex";
+        sizeControl.style.gap = "6px";
+        const current = LS.state.preferences.font_scale || "normal";
+        for (const opt of [
+            { value: "normal", label: "Normal" },
+            { value: "large", label: "Large" },
+            { value: "xlarge", label: "Extra Large" },
+        ]) {
+            const btn = LS.el("button");
+            btn.textContent = opt.label;
+            const isActive = opt.value === current;
+            Object.assign(btn.style, {
+                padding: "6px 12px",
+                fontSize: "12px",
+                background: isActive ? "var(--gold-bright)" : "transparent",
+                color: isActive ? "var(--bg-deep)" : "var(--ink-2)",
+                border: "1px solid " + (isActive ? "var(--gold-bright)" : "var(--line)"),
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontWeight: isActive ? "600" : "400",
+            });
+            btn.addEventListener("click", async () => {
+                await updatePreference("font_scale", opt.value);
+                LS.applyAccessibilityPrefs();
+                renderSettings();  // re-render to update active state
+            });
+            sizeControl.appendChild(btn);
+        }
+        row1.appendChild(sizeControl);
+        block.appendChild(row1);
+
+        // High contrast toggle
+        block.appendChild(buildToggleRow(
+            "high_contrast",
+            "High contrast colors",
+            "Switches to a brighter palette with whites and stronger gold for better legibility in low-light conditions or for low-vision users.",
+        ));
+
+        // Apply the prefs immediately when high_contrast is toggled. The
+        // existing buildToggleRow handler saves to the DB but doesn't
+        // re-apply CSS classes; hook that here by listening to the toggle.
+        // Simplest path: just observe the toggle after the row is built.
+        const toggleEl = block.querySelector(".pref-row:last-child .toggle");
+        if (toggleEl) {
+            toggleEl.addEventListener("click", () => {
+                // Slight delay so the preferences round-trip completes first
+                setTimeout(() => LS.applyAccessibilityPrefs(), 50);
+            });
+        }
+
+        return block;
+    }
+
+    // ----------------------------------------------------------------------
+    // Backup & Transfer section (added v0.5.3)
+    //
+    // Export: downloads a .sals file (ZIP) with all your templates,
+    //   categories, mappings, tags, preferences. API keys are opt-in via
+    //   the include-credentials checkbox.
+    // Import: uploads a .sals file. This is DESTRUCTIVE - replaces current
+    //   data. The UI confirms before triggering.
+    // ----------------------------------------------------------------------
+
+    function buildBackupBlock() {
+        const block = LS.el("div", "section-block");
+        block.appendChild(buildSectionTitle("Backup & Transfer"));
+        block.appendChild(LS.el("div", "section-help",
+            "Save a copy of all your templates, categories, and settings as a .sals file. Use this to move your setup to a new computer or just to keep a safety backup."));
+
+        // -- Export row --
+        const exportRow = LS.el("div", "pref-row");
+        const exportInfo = LS.el("div", "pref-info");
+        exportInfo.appendChild(LS.el("div", "pref-label", "Export backup"));
+        exportInfo.appendChild(LS.el("div", "pref-help",
+            "Downloads a .sals file containing all your data. Photos are not included (they stay on the NAS); paths are preserved so re-importing on the same NAS reattaches them automatically."));
+        exportRow.appendChild(exportInfo);
+
+        const exportControl = LS.el("div", "pref-control");
+        const exportBtn = LS.el("button", "btn-update-now", "Export…");
+        exportBtn.addEventListener("click", () => openExportModal());
+        exportControl.appendChild(exportBtn);
+        exportRow.appendChild(exportControl);
+        block.appendChild(exportRow);
+
+        // -- Import row --
+        const importRow = LS.el("div", "pref-row");
+        const importInfo = LS.el("div", "pref-info");
+        importInfo.appendChild(LS.el("div", "pref-label", "Import backup"));
+        const importHelp = LS.el("div", "pref-help");
+        importHelp.innerHTML = "Restore from a previously-exported .sals file. <strong>This replaces all your current data</strong> - we'll auto-export the current state as a safety backup before proceeding.";
+        importInfo.appendChild(importHelp);
+        importRow.appendChild(importInfo);
+
+        const importControl = LS.el("div", "pref-control");
+        const importBtn = LS.el("button", "btn-secondary-sm", "Import…");
+        importBtn.addEventListener("click", () => openImportModal());
+        importControl.appendChild(importBtn);
+        importRow.appendChild(importControl);
+        block.appendChild(importRow);
+
+        return block;
+    }
+
+    /**
+     * Export modal - asks whether to include credentials in the .sals file,
+     * with a clear security warning, then triggers the download.
+     */
+    function openExportModal() {
+        const backdrop = LS.el("div", "modal-backdrop");
+        const card = LS.el("div", "modal-card");
+        card.style.maxWidth = "560px";
+
+        const h2 = LS.el("h2");
+        h2.innerHTML = `Export <em>backup</em>`;
+        card.appendChild(h2);
+
+        card.appendChild(LS.el("div", "modal-sub",
+            "Choose what to include in the .sals file. Templates, categories, mappings, tags, and preferences are always included."));
+
+        // Credentials checkbox + warning
+        const credsRow = LS.el("div");
+        Object.assign(credsRow.style, {
+            marginTop: "16px",
+            padding: "14px 16px",
+            background: "var(--bg-input)",
+            border: "1px solid var(--gold)",
+            borderRadius: "4px",
+        });
+
+        const checkboxLabel = LS.el("label");
+        checkboxLabel.style.display = "flex";
+        checkboxLabel.style.alignItems = "flex-start";
+        checkboxLabel.style.gap = "10px";
+        checkboxLabel.style.cursor = "pointer";
+
+        const checkbox = LS.el("input");
+        checkbox.type = "checkbox";
+        checkbox.style.marginTop = "3px";
+        checkboxLabel.appendChild(checkbox);
+
+        const labelText = LS.el("div");
+        labelText.style.flex = "1";
+        labelText.innerHTML = `
+            <div style="font-weight: 600; color: var(--gold-bright); margin-bottom: 4px;">Include API keys (optional)</div>
+            <div style="color: var(--ink-2); font-size: 13px; line-height: 1.5;">
+                Includes your Reverb token, eBay credentials, Squarespace key, and ImgBB key in the backup. Convenient for moving to a new computer.
+                <br><br>
+                <strong style="color: var(--rust-bright);">⚠ Security:</strong> The file is not encrypted. Treat it like a password — store it somewhere only you have access to.
+            </div>
+        `;
+        checkboxLabel.appendChild(labelText);
+        credsRow.appendChild(checkboxLabel);
+        card.appendChild(credsRow);
+
+        // Footer
+        const footer = LS.el("div", "modal-footer-bar");
+        footer.style.marginTop = "20px";
+
+        const cancelBtn = LS.el("button", "btn-ghost", "Cancel");
+        cancelBtn.addEventListener("click", () => backdrop.remove());
+        footer.appendChild(cancelBtn);
+
+        const downloadBtn = LS.el("button", "btn-update-now", "Download .sals file");
+        downloadBtn.addEventListener("click", async () => {
+            downloadBtn.disabled = true;
+            downloadBtn.textContent = "Generating…";
+            // Use a real anchor click so the browser handles the download
+            // dialog (Save As) rather than just navigating to the URL.
+            const url = `/api/backup/export?include_credentials=${checkbox.checked ? "true" : "false"}`;
+            const a = document.createElement("a");
+            a.href = url;
+            // The Content-Disposition header sets the filename; just trigger
+            // the download. We can't easily detect when the browser finishes,
+            // so close the modal after a short delay.
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => backdrop.remove(), 600);
+        });
+        footer.appendChild(downloadBtn);
+        card.appendChild(footer);
+
+        backdrop.appendChild(card);
+        backdrop.addEventListener("click", e => {
+            if (e.target === backdrop) backdrop.remove();
+        });
+        LS.attachModalCloseButton(card, backdrop);
+        document.body.appendChild(backdrop);
+    }
+
+    /**
+     * Import modal - confirms the destructive action, optionally takes a
+     * safety backup of current state first, then uploads the chosen .sals.
+     */
+    function openImportModal() {
+        const backdrop = LS.el("div", "modal-backdrop");
+        const card = LS.el("div", "modal-card");
+        card.style.maxWidth = "560px";
+
+        const h2 = LS.el("h2");
+        h2.innerHTML = `Import <em>backup</em>`;
+        card.appendChild(h2);
+
+        card.appendChild(LS.el("div", "modal-sub",
+            "Restore a .sals file. This will replace your current templates, categories, mappings, tags, and preferences."));
+
+        // Warning callout
+        const warn = LS.el("div");
+        Object.assign(warn.style, {
+            marginTop: "16px",
+            padding: "14px 16px",
+            background: "var(--bg-input)",
+            border: "1px solid var(--rust)",
+            borderRadius: "4px",
+            fontSize: "13px",
+            lineHeight: "1.5",
+            color: "var(--ink-2)",
+        });
+        warn.innerHTML = `
+            <div style="font-weight: 600; color: var(--rust-bright); margin-bottom: 6px;">⚠ This replaces all current data</div>
+            <div>Before importing, we'll automatically download a safety backup of your current state — if anything goes wrong, you can re-import that to roll back.</div>
+        `;
+        card.appendChild(warn);
+
+        // File picker
+        const fileLabel = LS.el("label");
+        fileLabel.style.display = "block";
+        fileLabel.style.marginTop = "16px";
+        fileLabel.style.fontSize = "11px";
+        fileLabel.style.color = "var(--ink-3)";
+        fileLabel.style.textTransform = "uppercase";
+        fileLabel.style.letterSpacing = "0.08em";
+        fileLabel.style.marginBottom = "5px";
+        fileLabel.textContent = "Choose .sals file";
+        card.appendChild(fileLabel);
+
+        const fileInput = LS.el("input");
+        fileInput.type = "file";
+        fileInput.accept = ".sals,application/zip,application/octet-stream";
+        fileInput.style.cssText = "width: 100%; background: var(--bg-input); border: 1px solid var(--line); border-radius: 4px; padding: 8px; color: var(--ink); font-size: 13px;";
+        card.appendChild(fileInput);
+
+        const status = LS.el("div");
+        status.style.minHeight = "20px";
+        status.style.marginTop = "12px";
+        status.style.fontSize = "12px";
+        status.style.fontFamily = "var(--font-mono)";
+        card.appendChild(status);
+
+        // Footer
+        const footer = LS.el("div", "modal-footer-bar");
+        footer.style.marginTop = "20px";
+
+        const cancelBtn = LS.el("button", "btn-ghost", "Cancel");
+        cancelBtn.addEventListener("click", () => backdrop.remove());
+        footer.appendChild(cancelBtn);
+
+        const importBtn = LS.el("button", "btn-update-now", "Import (replaces current data)");
+        importBtn.addEventListener("click", async () => {
+            const file = fileInput.files && fileInput.files[0];
+            if (!file) {
+                status.style.color = "var(--rust-bright)";
+                status.textContent = "Choose a file first.";
+                return;
+            }
+
+            // Step 1: trigger a safety backup download. We just open the
+            // export URL; the browser saves it with the filename header.
+            status.style.color = "var(--ink-3)";
+            status.textContent = "Saving safety backup of current state…";
+            const safetyA = document.createElement("a");
+            safetyA.href = "/api/backup/export?include_credentials=false";
+            document.body.appendChild(safetyA);
+            safetyA.click();
+            document.body.removeChild(safetyA);
+
+            // Brief pause so the safety backup download starts before we
+            // mutate the DB. Not strictly required (export reads, import
+            // writes - different transactions) but feels safer.
+            await new Promise(r => setTimeout(r, 800));
+
+            // Step 2: read the chosen file and POST it
+            importBtn.disabled = true;
+            cancelBtn.disabled = true;
+            status.textContent = "Importing…";
+            try {
+                const buffer = await file.arrayBuffer();
+                const response = await fetch("/api/backup/import", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/octet-stream" },
+                    body: buffer,
+                });
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error(`HTTP ${response.status}: ${text}`);
+                }
+                const result = await response.json();
+
+                status.style.color = "var(--moss-bright)";
+                const counts = result.counts || {};
+                const summary = Object.entries(counts)
+                    .map(([k, v]) => `${v} ${k}`)
+                    .join(", ");
+                status.textContent = `✓ Restored: ${summary}`;
+
+                if (result.warnings && result.warnings.length > 0) {
+                    const w = LS.el("div");
+                    w.style.marginTop = "10px";
+                    w.style.fontSize = "11px";
+                    w.style.color = "var(--gold-bright)";
+                    w.innerHTML = `<strong>${result.warnings.length} warning(s):</strong><br>` +
+                        result.warnings.map(LS.escapeHTML).join("<br>");
+                    card.insertBefore(w, footer);
+                }
+
+                // Reload the templates list so the new ones show
+                if (LS.loadTemplates) await LS.loadTemplates();
+
+                setTimeout(() => {
+                    backdrop.remove();
+                    LS.loadAndRenderSettings();
+                }, 2000);
+            } catch (err) {
+                status.style.color = "var(--rust-bright)";
+                status.textContent = `Import failed: ${err.message}`;
+                importBtn.disabled = false;
+                cancelBtn.disabled = false;
+            }
+        });
+        footer.appendChild(importBtn);
+        card.appendChild(footer);
+
+        backdrop.appendChild(card);
+        backdrop.addEventListener("click", e => {
+            if (e.target === backdrop) backdrop.remove();
+        });
+        LS.attachModalCloseButton(card, backdrop);
+        document.body.appendChild(backdrop);
     }
 
     // ----------------------------------------------------------------------

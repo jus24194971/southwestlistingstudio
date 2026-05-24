@@ -13,6 +13,36 @@ body {
     user-select: none;
 }
 
+/* Accessibility: font scaling applied as a CSS zoom on the body. Chromium's
+   `zoom` is the cleanest way to scale every nested px-value at once without
+   refactoring every stylesheet. Set via a body class from main.js based on
+   the user's font_scale preference. */
+body.font-scale-large   { zoom: 1.20; }
+body.font-scale-xlarge  { zoom: 1.40; }
+
+/* Accessibility: high-contrast palette. Overrides the brand tokens with
+   versions that have stronger foreground/background contrast for users
+   with low vision. Triggered by .high-contrast on the body. */
+body.high-contrast {
+    --ink:             #FFFFFF;          /* pure white, not warm cream */
+    --ink-2:           #F4E4B6;          /* much brighter than #CDB98F */
+    --ink-3:           #BFA67B;          /* brighter dim text */
+    --ink-4:           #806C47;          /* keep some hierarchy */
+
+    --bg-shell:        #0D0B08;          /* darker base for more contrast */
+    --bg-panel:        #1A1610;
+    --bg-panel-2:      #221C14;
+    --bg-input:        #050402;          /* near-black input fields */
+
+    --gold-bright:     #FFD580;          /* brighter gold for headings */
+    --gold:            #DFB871;
+    --moss-bright:     #B5E060;          /* brighter success green */
+    --rust-bright:     #FF7050;          /* brighter error red */
+
+    --line:            #6B5A40;          /* visible borders */
+    --line-bright:     #8B7550;
+}
+
 /* ============================================================
    Chassis - the outer frame of the app window
    ============================================================ */

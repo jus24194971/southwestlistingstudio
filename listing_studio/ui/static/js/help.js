@@ -359,6 +359,100 @@
         },
 
         {
+            id: "accessibility",
+            icon: "👁",
+            title: "Accessibility",
+            subtitle: "Adjusting text size and contrast for easier reading",
+            content: `
+                <p>Listing Studio has two accessibility settings to make the app easier on the eyes. Find them in Settings, at the very top of the page so they're quick to reach.</p>
+
+                <h2>Text size</h2>
+                <p>Three options:</p>
+                <ul>
+                    <li><strong>Normal</strong> - the default size. Comfortable on most screens.</li>
+                    <li><strong>Large</strong> - 20% bigger. Helpful if standard text feels small.</li>
+                    <li><strong>Extra Large</strong> - 40% bigger. For when you really want text to pop.</li>
+                </ul>
+                <p>The setting saves immediately and stays applied next time you open the app. It scales <em>every</em> screen, including modals, the photo picker, and Help.</p>
+
+                <div class="help-callout tip">
+                    <span class="help-callout-label">Tip</span>
+                    If you've picked Large or Extra Large and a screen feels too cramped, resize the window taller. The app handles that gracefully and most sections will reflow.
+                </div>
+
+                <h2>High contrast colors</h2>
+                <p>A toggle that swaps the standard cream-on-brown palette for a brighter version with pure whites, deeper backgrounds, and more vivid gold. Useful in:</p>
+                <ul>
+                    <li>Bright daylight (the standard cream can wash out on glossy screens)</li>
+                    <li>For users with low vision who benefit from stronger luminance contrast</li>
+                </ul>
+                <p>Like the size setting, it applies instantly and persists across restarts.</p>
+
+                <div class="help-callout">
+                    <span class="help-callout-label">Note</span>
+                    Both settings are local to this installation. If you back up your data and restore on another machine, your accessibility choices come with it because they're stored as preferences.
+                </div>
+            `,
+        },
+
+        {
+            id: "backup",
+            icon: "💾",
+            title: "Backup & Transfer",
+            subtitle: "Saving and restoring your templates and settings",
+            content: `
+                <p>Listing Studio lets you save your full setup — templates, categories, mappings, tags, preferences — as a single .sals file. Use it to:</p>
+                <ul>
+                    <li>Keep a safety backup somewhere off your computer</li>
+                    <li>Move your setup to a new computer</li>
+                    <li>Roll back to an earlier state if something goes sideways</li>
+                </ul>
+
+                <h2>Exporting</h2>
+                <ol class="help-steps">
+                    <li>Settings → scroll to <strong>Backup & Transfer</strong> → click <strong>Export…</strong></li>
+                    <li>A modal asks whether to include your API keys.
+                        <ul>
+                            <li><strong>Off</strong> (default, recommended for most backups): the file contains everything except your API tokens. Safer to store anywhere.</li>
+                            <li><strong>On</strong>: API keys travel with the file. Convenient for new-computer setup, but the file is then sensitive — treat it like a password.</li>
+                        </ul>
+                    </li>
+                    <li>Click <strong>Download .sals file</strong>. The browser saves it to your Downloads folder with a date in the name.</li>
+                </ol>
+
+                <div class="help-callout warn">
+                    <span class="help-callout-label">About credentials</span>
+                    The .sals file is not encrypted in v0.5.3. If you include credentials and the file leaks, your platform accounts would be accessible. Don't email it, don't upload to a public cloud folder, don't leave it on a shared drive. Keep it on a thumb drive, in a private OneDrive/Dropbox folder, or somewhere only you can reach.
+                </div>
+
+                <h2>What's NOT in the backup</h2>
+                <ul>
+                    <li><strong>Photo files</strong> - the .sals file only saves the <em>paths</em> to your photos (e.g. <code>Z:\\...\\photo.jpg</code>). On the same NAS, photos reattach automatically when you import. On a different computer without the same network drive, you'll need to re-pick them.</li>
+                    <li><strong>Post history</strong> - listings already posted to Reverb/eBay aren't part of the backup. Those live on the marketplaces themselves; the backup is for your local data.</li>
+                    <li><strong>Cached thumbnails</strong> - these regenerate as needed from the source photos.</li>
+                </ul>
+
+                <h2>Importing</h2>
+                <p>To restore from a .sals file (e.g. moving to a new computer):</p>
+                <ol class="help-steps">
+                    <li>Install Listing Studio on the new computer.</li>
+                    <li>Settings → Backup & Transfer → click <strong>Import…</strong></li>
+                    <li>Choose the .sals file. The app first <strong>auto-downloads a safety backup of your current state</strong> (in case you imported the wrong file by mistake).</li>
+                    <li>Click <strong>Import (replaces current data)</strong>. The current templates, categories, etc. get wiped and replaced with the contents of the file.</li>
+                    <li>If credentials were included in the file, you're already connected on the new machine. Otherwise, reconnect each platform in the Auto-posting Platforms section.</li>
+                </ol>
+
+                <div class="help-callout warn">
+                    <span class="help-callout-label">Import is destructive</span>
+                    Importing replaces everything. The safety backup happens automatically before each import — if you accidentally pick the wrong file, the safety .sals in your Downloads folder is the one to import back.
+                </div>
+
+                <h2>The .sals format</h2>
+                <p>For the curious: a .sals file is just a ZIP archive with JSON files inside. You can unzip it with any tool (7-Zip, Windows built-in) and inspect the contents. The structure is documented at the top of <code>listing_studio/core/backup.py</code> in the source code.</p>
+            `,
+        },
+
+        {
             id: "troubleshooting",
             icon: "🔧",
             title: "Troubleshooting",

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
@@ -667,6 +667,67 @@ async def test_photo_host() -> dict:
     if ok:
         return {"ok": True, "account_label": message}
     return {"ok": False, "error": message}
+
+
+# ---------------------------------------------------------------------------
+# Backup / Restore (.sals file format)
+# ---------------------------------------------------------------------------
+#
+# Export bundles templates, categories, mappings, tags, preferences, and
+# optionally API credentials into a single .sals (Southwest Acoustics
+# Listing Studio) ZIP file. Import restores from one. Both endpoints take
+# care to surface clear warnings; the destructive nature of import is
+# acknowledged in the UI before the call lands here.
+
+
+@app.get("/api/backup/export")
+async def backup_export(include_credentials: bool = False):
+    """Return a .sals backup of the user's data as a file download.
+
+    Query params:
+      include_credentials (default false): if true, embed stored API tokens
+        in the archive. The UI must show a warning before passing true.
+    """
+    from fastapi.responses import Response
+    from listing_studio.core import backup
+
+    with session_scope() as session:
+        data = backup.export_backup(session, include_credentials=include_credentials)
+
+    # Filename with version + date for easy identification on disk
+    from datetime import datetime as _dt
+    stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+    filename = f"listing-studio-backup-v{__version__}-{stamp}.sals"
+
+    return Response(
+        content=data,
+        media_type="application/x-sals",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/backup/import")
+async def backup_import(request: Request) -> dict:
+    """Restore a .sals backup. DESTRUCTIVE - replaces current data.
+
+    Body: raw .sals file bytes (POSTed as application/octet-stream or
+    multipart/form-data; we read whatever the request body contains).
+
+    Returns: ``{"manifest": {...}, "counts": {...}, "warnings": [...]}``
+    """
+    from listing_studio.core import backup
+
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "Empty request body - upload a .sals file")
+
+    with session_scope() as session:
+        try:
+            result = backup.import_backup(session, data, restore_credentials=True)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    return result
 
 
 # ---------------------------------------------------------------------------

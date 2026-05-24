@@ -24,7 +24,13 @@
             LS.loadTemplates(),
             loadFeeStructures(),
             LS.loadConnectionStatus(),
+            LS.loadPreferences(),  // also pulls in accessibility settings
         ]);
+
+        // Apply accessibility preferences as <body> classes so the CSS
+        // overrides in base.css kick in. See settings.js for the matching
+        // toggles that update these.
+        LS.applyAccessibilityPrefs();
 
         // Check for updates in the background. Non-blocking - if it fails or
         // takes a while, the UI is already responsive.
@@ -32,6 +38,22 @@
             LS.checkForUpdates();
         }
     }
+
+    // Reads the font_scale + high_contrast prefs from LS.state.preferences
+    // and applies them as classes on the body. Called once at boot and
+    // again whenever the user toggles them in Settings.
+    LS.applyAccessibilityPrefs = function () {
+        const prefs = LS.state.preferences || {};
+        const body = document.body;
+
+        // Font scale - mutually exclusive options ("normal" = no class)
+        body.classList.remove("font-scale-large", "font-scale-xlarge");
+        if (prefs.font_scale === "large") body.classList.add("font-scale-large");
+        if (prefs.font_scale === "xlarge") body.classList.add("font-scale-xlarge");
+
+        // High contrast - boolean toggle
+        body.classList.toggle("high-contrast", !!prefs.high_contrast);
+    };
 
     async function loadFeeStructures() {
         LS.state.feeStructures = await LS.api("GET", "/api/fees");

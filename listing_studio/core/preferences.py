@@ -78,6 +78,12 @@ _PREFERENCE_SPECS: dict[str, PreferenceSpec] = {
     # description ("About Southwest Acoustic Products" etc). Stored as plain
     # text - the coerce method's default-string fallthrough handles it.
     "reverb_listing_tail": PreferenceSpec("reverb_listing_tail", "str", ""),
+
+    # Accessibility settings (added v0.5.3 for Dad)
+    # font_scale: "normal" | "large" | "xlarge" - applied as CSS zoom on body.
+    # high_contrast: bool - swaps in a higher-contrast color palette.
+    "font_scale": PreferenceSpec("font_scale", "str", "normal"),
+    "high_contrast": PreferenceSpec("high_contrast", "bool", False),
 }
 
 
