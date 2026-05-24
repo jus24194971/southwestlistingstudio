@@ -474,7 +474,98 @@ def install_update(
     """
     install_root = download_and_extract(release, progress_callback)
     set_current_version(install_root)
+    # Rewrite any existing Windows .lnk shortcuts to point at the new install
+    # location. Best-effort: failures don't block the update.
+    try:
+        updated = refresh_shortcuts(install_root)
+        if updated:
+            logger.info("Refreshed %d shortcut(s) to point at new install", updated)
+    except Exception as exc:  # noqa: BLE001 - shortcut refresh must never break the update
+        logger.warning("Shortcut refresh skipped: %s", exc)
     return install_root
+
+
+# ---------------------------------------------------------------------------
+# Shortcut refresh - keep desktop/Start Menu .lnk files current
+# ---------------------------------------------------------------------------
+#
+# Each update installs to a new versioned directory under
+# %LOCALAPPDATA%/ListingStudio/versions/<tag>/, but any desktop or Start
+# Menu shortcut would still point at the OLD path until rewritten. After
+# every install_update we scan the user's standard shortcut locations,
+# identify any .lnk targeting a ListingStudio.exe, and rewrite it to
+# target the new install. Side effect: Windows invalidates its icon
+# cache for the modified .lnk, so a new app icon shows up immediately
+# instead of needing a reboot.
+
+
+def refresh_shortcuts(install_root: Path) -> int:
+    """Rewrite Windows .lnk shortcuts that target ListingStudio.exe.
+
+    Scans the user's Desktop (OneDrive-aware) and Start Menu Programs
+    folders. For every .lnk whose target's basename is ``ListingStudio.exe``,
+    updates its target, working directory, and icon to point at the new
+    install. Returns the count of shortcuts updated.
+
+    Best-effort: returns 0 (and logs) on any failure rather than raising,
+    so a missing pywin32 or an exotic locale never breaks the update.
+    """
+    if os.name != "nt":
+        return 0
+
+    try:
+        from win32com.client import Dispatch
+    except ImportError:
+        logger.info("pywin32 not available; skipping shortcut refresh")
+        return 0
+
+    exe_name = "ListingStudio.exe"
+    exe_path = install_root / exe_name
+    exe_path_str = str(exe_path)
+    install_root_str = str(install_root)
+
+    shell = Dispatch("WScript.Shell")
+
+    # Candidate directories to scan. SpecialFolders handles OneDrive-redirected
+    # Desktop transparently (returns the actual resolved path).
+    candidates: list[Path] = []
+    for folder_name in ("Desktop", "Programs", "AllUsersDesktop", "AllUsersPrograms"):
+        try:
+            value = shell.SpecialFolders(folder_name)
+            if value:
+                candidates.append(Path(str(value)))
+        except Exception:  # noqa: BLE001 - some specials may not exist on all systems
+            continue
+
+    updated = 0
+    for dir_path in candidates:
+        if not dir_path.exists():
+            continue
+        for lnk in dir_path.rglob("*.lnk"):
+            try:
+                # CreateShortcut on an existing .lnk reads it; .Save() writes back.
+                shortcut = shell.CreateShortcut(str(lnk))
+                target = str(shortcut.TargetPath or "")
+                if not target:
+                    continue
+                # Match by basename - this catches shortcuts at any path that
+                # launch our exe, including the bootstrap install location and
+                # any older versioned dirs from previous updates.
+                if Path(target).name.lower() != exe_name.lower():
+                    continue
+                if target.lower() == exe_path_str.lower():
+                    # Already pointing at the right place
+                    continue
+                shortcut.TargetPath = exe_path_str
+                shortcut.WorkingDirectory = install_root_str
+                shortcut.IconLocation = f"{exe_path_str},0"
+                shortcut.Save()
+                updated += 1
+                logger.info("Refreshed shortcut: %s -> %s", lnk, exe_path_str)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Couldn't refresh shortcut %s: %s", lnk, exc)
+
+    return updated
 
 
 def cleanup_old_versions(keep_count: int = 2) -> None:

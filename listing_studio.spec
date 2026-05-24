@@ -67,6 +67,13 @@ hiddenimports = [
     "keyring.backends.Windows",
     # Email validator (sometimes needed by Pydantic)
     "email_validator",
+    # win32com - used by the updater's shortcut refresh to rewrite .lnk
+    # files via WScript.Shell. PyInstaller's hook for pywin32 covers most
+    # of it, but we list the specific submodule we import explicitly so
+    # a future hook change can't drop it accidentally.
+    "win32com",
+    "win32com.client",
+    "pythoncom",
 ]
 
 # Excluded modules - we don't need these in the bundle, removing them shrinks
