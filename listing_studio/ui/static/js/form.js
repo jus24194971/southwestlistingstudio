@@ -792,20 +792,31 @@
                 fontFamily: "var(--font-mono)",
                 color: "var(--ink-2)",
             });
-            const titleOk = stored.inventory_title ? "✓" : "✗";
-            const descOk = (stored.inventory_description_len || 0) > 0 ? "✓" : "✗";
-            const photosOk = (stored.inventory_image_count || 0) > 0 ? "✓" : "✗";
-            const aspectsOk = (stored.inventory_aspect_count || 0) > 0 ? "✓" : "✗";
+            // eBay's inventory_item GET is flaky and often returns 500
+            // right after a PUT, even though the PUT itself succeeded.
+            // When that happens, the inventory_* fields look empty
+            // because we couldn't read them back - NOT because they
+            // weren't stored. Distinguish that case visually.
+            const invStatus = stored.inventory_readback_status;
+            const invGetOk = invStatus === 200;
+            const invGetNote = (invStatus && !invGetOk)
+                ? ` <span style="color: var(--gold-bright);">(eBay GET returned ${invStatus} — data is likely stored, eBay's read endpoint hiccupped)</span>`
+                : "";
+            const placeholder = invGetOk ? "(missing)" : "(eBay GET failed)";
+            const titleOk = invGetOk ? (stored.inventory_title ? "✓" : "✗") : "?";
+            const descOk = invGetOk ? ((stored.inventory_description_len || 0) > 0 ? "✓" : "✗") : "?";
+            const photosOk = invGetOk ? ((stored.inventory_image_count || 0) > 0 ? "✓" : "✗") : "?";
+            const aspectsOk = invGetOk ? ((stored.inventory_aspect_count || 0) > 0 ? "✓" : "✗") : "?";
             const priceVal = stored.offer_price ? `${stored.offer_price.value} ${stored.offer_price.currency || ""}` : "—";
             diag.innerHTML = `
                 <div style="font-weight: 600; color: var(--ink-1); margin-bottom: 6px; font-family: var(--font-sans);">
-                    What eBay stored (readback):
+                    What eBay stored (readback):${invGetNote}
                 </div>
-                <div>${titleOk} Title: ${LS.escapeHTML(stored.inventory_title || "(missing)")}</div>
-                <div>${descOk} Description: ${stored.inventory_description_len || 0} chars</div>
-                <div>${photosOk} Photos: ${stored.inventory_image_count || 0}</div>
-                <div>${aspectsOk} Item specifics: ${stored.inventory_aspect_count || 0}</div>
-                <div>Condition: ${LS.escapeHTML(stored.inventory_condition || "—")}</div>
+                <div>${titleOk} Title: ${LS.escapeHTML(stored.inventory_title || placeholder)}</div>
+                <div>${descOk} Description: ${invGetOk ? (stored.inventory_description_len || 0) + " chars" : placeholder}</div>
+                <div>${photosOk} Photos: ${invGetOk ? (stored.inventory_image_count || 0) : placeholder}</div>
+                <div>${aspectsOk} Item specifics: ${invGetOk ? (stored.inventory_aspect_count || 0) : placeholder}</div>
+                <div>Condition: ${LS.escapeHTML(stored.inventory_condition || (invGetOk ? "—" : placeholder))}</div>
                 <div>Category: ${LS.escapeHTML(stored.offer_category_id || "—")} · Price: ${LS.escapeHTML(priceVal)}</div>
                 <div>Offer status: ${LS.escapeHTML(stored.offer_status || "—")}</div>
             `;

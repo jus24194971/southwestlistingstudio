@@ -888,28 +888,42 @@ class EbayConnector(PlatformConnector):
 
             # Read back the inventory_item to confirm eBay stored what we
             # sent. 204 means "accepted, no body returned" - the only way
-            # to verify the data is to GET it.
+            # to verify the data is to GET it. eBay's GET endpoint is
+            # known to throw 500 right after a PUT (eventual consistency);
+            # retry once after a short delay before giving up.
             readback_inventory: dict[str, Any] = {}
-            try:
-                rb_inv = await client.get(
-                    f"{self.BASE_URL}/sell/inventory/v1/inventory_item/{sku}",
-                    headers=headers,
-                )
-                if rb_inv.status_code == 200:
-                    readback_inventory = rb_inv.json()
-                    logger.info(
-                        "eBay inventory_item GET %s readback:\n%s",
-                        sku,
-                        json.dumps(readback_inventory, indent=2)[:4000],
+            inv_readback_status: int | None = None
+            import asyncio as _asyncio
+            for attempt in (1, 2):
+                try:
+                    rb_inv = await client.get(
+                        f"{self.BASE_URL}/sell/inventory/v1/inventory_item/{sku}",
+                        headers=headers,
                     )
-                else:
+                    inv_readback_status = rb_inv.status_code
+                    if rb_inv.status_code == 200:
+                        readback_inventory = rb_inv.json()
+                        logger.info(
+                            "eBay inventory_item GET %s readback (attempt %d):\n%s",
+                            sku,
+                            attempt,
+                            json.dumps(readback_inventory, indent=2)[:4000],
+                        )
+                        break
                     logger.warning(
-                        "eBay inventory_item readback returned HTTP %d: %s",
+                        "eBay inventory_item readback attempt %d returned HTTP %d: %s",
+                        attempt,
                         rb_inv.status_code,
                         rb_inv.text[:500],
                     )
-            except Exception as exc:  # noqa: BLE001 - diagnostic only
-                logger.warning("eBay inventory_item readback failed: %s", exc)
+                except Exception as exc:  # noqa: BLE001 - diagnostic only
+                    logger.warning(
+                        "eBay inventory_item readback attempt %d failed: %s",
+                        attempt,
+                        exc,
+                    )
+                if attempt == 1:
+                    await _asyncio.sleep(1.5)
 
             # ---- Step 2: POST offer (unpublished) ----
             offer_payload: dict[str, Any] = {
@@ -922,6 +936,12 @@ class EbayConnector(PlatformConnector):
                 "pricingSummary": {
                     "price": {"currency": "USD", "value": price_value},
                 },
+                # CRITICAL: when true (eBay's default), if our brand+MPN
+                # match anything in eBay's catalog, eBay overlays the
+                # catalog product's data (including title, photos, aspects)
+                # on top of ours - which can silently zero out our content.
+                # Setting false keeps our submitted data authoritative.
+                "includeCatalogProductDetails": False,
             }
 
             # Business policies + location. eBay rejects the offer if any
@@ -959,21 +979,84 @@ class EbayConnector(PlatformConnector):
 
             try:
                 logger.info(
-                    "eBay offer POST payload:\n%s",
+                    "eBay offer payload (will upsert by SKU):\n%s",
                     json.dumps(offer_payload, indent=2)[:4000],
                 )
             except Exception:
                 pass
 
-            offer_response = await client.post(
-                f"{self.BASE_URL}/sell/inventory/v1/offer",
-                headers=headers,
-                json=offer_payload,
-            )
-            if offer_response.status_code not in (200, 201):
-                _raise_ebay_error(self.platform, "offer creation", offer_response)
+            # ---- Offer upsert: check for existing offer for this SKU ----
+            # eBay's offer endpoint is NOT an upsert via POST - it returns
+            # 25002 "Offer entity already exists" if you POST when one is
+            # already there. Inventory_item PUT is a true upsert; offer is
+            # GET-then-(PUT-or-POST).
+            existing_offer_id: str | None = None
+            try:
+                lookup_response = await client.get(
+                    f"{self.BASE_URL}/sell/inventory/v1/offer",
+                    headers=headers,
+                    params={"sku": sku, "marketplace_id": EBAY_MARKETPLACE_ID, "limit": "5"},
+                )
+                if lookup_response.status_code == 200:
+                    offers = lookup_response.json().get("offers") or []
+                    for off in offers:
+                        # Match on SKU + marketplace, prefer UNPUBLISHED so
+                        # we don't accidentally PUT over a live listing.
+                        if off.get("sku") == sku:
+                            existing_offer_id = off.get("offerId")
+                            if off.get("status") == "UNPUBLISHED":
+                                break
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("eBay offer lookup failed (will fall back to POST): %s", exc)
 
-            offer_data = offer_response.json()
+            if existing_offer_id:
+                logger.info("eBay offer exists for SKU %s (offerId=%s); PUT to update.",
+                            sku, existing_offer_id)
+                offer_response = await client.put(
+                    f"{self.BASE_URL}/sell/inventory/v1/offer/{existing_offer_id}",
+                    headers=headers,
+                    json=offer_payload,
+                )
+                if offer_response.status_code not in (200, 204):
+                    _raise_ebay_error(self.platform, "offer update", offer_response)
+                # PUT returns 204 with no body; we already have the ID.
+                if offer_response.status_code == 204 or not offer_response.text.strip():
+                    offer_data = {"offerId": existing_offer_id}
+                else:
+                    offer_data = offer_response.json()
+            else:
+                offer_response = await client.post(
+                    f"{self.BASE_URL}/sell/inventory/v1/offer",
+                    headers=headers,
+                    json=offer_payload,
+                )
+                if offer_response.status_code not in (200, 201):
+                    # Special-case 25002: an offer for this SKU now exists
+                    # but we missed it in the lookup (race or filter issue).
+                    # Parse offerId out of the error parameters and PUT.
+                    retry_id = _extract_existing_offer_id(offer_response)
+                    if retry_id:
+                        logger.info(
+                            "eBay POST /offer hit 25002; retrying as PUT /offer/%s",
+                            retry_id,
+                        )
+                        offer_response = await client.put(
+                            f"{self.BASE_URL}/sell/inventory/v1/offer/{retry_id}",
+                            headers=headers,
+                            json=offer_payload,
+                        )
+                        if offer_response.status_code not in (200, 204):
+                            _raise_ebay_error(self.platform, "offer update (retry)", offer_response)
+                        offer_data = (
+                            {"offerId": retry_id}
+                            if offer_response.status_code == 204 or not offer_response.text.strip()
+                            else offer_response.json()
+                        )
+                    else:
+                        _raise_ebay_error(self.platform, "offer creation", offer_response)
+                else:
+                    offer_data = offer_response.json()
+
             offer_id = offer_data.get("offerId")
 
             # Read back the offer to confirm eBay stored what we sent.
@@ -1011,6 +1094,11 @@ class EbayConnector(PlatformConnector):
             "inventory_image_count": len(stored_inv_product.get("imageUrls") or []),
             "inventory_aspect_count": len(stored_inv_product.get("aspects") or {}),
             "inventory_condition": readback_inventory.get("condition") if readback_inventory else None,
+            # When eBay's inventory_item GET returns 500 (their known flaky
+            # endpoint), the inventory_* fields above will look empty even
+            # though the data IS stored. The UI uses this to tell the user
+            # "eBay's GET hiccupped" instead of "your data is missing".
+            "inventory_readback_status": inv_readback_status,
             "offer_category_id": (readback_offer.get("categoryId") if readback_offer else None),
             "offer_description_len": len(readback_offer.get("listingDescription") or "") if readback_offer else 0,
             "offer_price": (readback_offer.get("pricingSummary") or {}).get("price") if readback_offer else None,
@@ -1075,6 +1163,22 @@ def _condition_enum_for_id(condition_id: int) -> str:
         6000: "USED_ACCEPTABLE",
         7000: "FOR_PARTS_OR_NOT_WORKING",
     }.get(condition_id, "USED_EXCELLENT")
+
+
+def _extract_existing_offer_id(response: httpx.Response) -> str | None:
+    """If response is eBay's 25002 'Offer entity already exists' error, return
+    the offerId from its `parameters` array. Otherwise return None.
+    """
+    try:
+        data = response.json()
+    except Exception:
+        return None
+    for err in data.get("errors") or []:
+        if err.get("errorId") == 25002:
+            for p in err.get("parameters") or []:
+                if p.get("name") == "offerId" and p.get("value"):
+                    return p["value"]
+    return None
 
 
 def _raise_ebay_error(platform, step: str, response: httpx.Response) -> None:
