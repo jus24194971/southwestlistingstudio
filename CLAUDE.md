@@ -356,7 +356,7 @@ ruff check . --fix
 # Type-check
 mypy listing_studio
 
-# Tests (no tests yet — see the empty tests/ folder; aspirational)
+# Tests (none yet; there's no tests/ folder, so pytest exits 5 "no tests ran")
 pytest
 
 # Run the app against your local DB
@@ -366,6 +366,104 @@ python -m listing_studio
 The log file each run produces lives at
 `%LOCALAPPDATA%\ListingStudio\logs\` — useful when a packaged build
 misbehaves and you can't see stderr.
+
+## Dev setup on macOS (Justin's Mac, rebuilt 2026-10-22)
+
+The app ships for Dad's Windows machine. Justin develops on a Mac, which
+was reformatted and set up again on 2026-10-22.
+
+- **Python 3.12** from Homebrew (`/opt/homebrew/bin/python3.12`), the same
+  version the CI build uses (`.github/workflows/build-and-release.yml`).
+  macOS's own `/usr/bin/python3` is 3.9, which is below
+  `requires-python = ">=3.11"`. If `brew` is missing from a new shell, run
+  `eval "$(/opt/homebrew/bin/brew shellenv zsh)"`.
+- **venv** lives at `.venv/` (gitignored):
+
+  ```bash
+  /opt/homebrew/bin/python3.12 -m venv .venv
+  .venv/bin/pip install -e ".[dev]"
+  source .venv/bin/activate
+  python -m listing_studio      # opens the window; close it to quit
+  ```
+
+- **Dependencies are unpinned** (only `>=`, no lockfile), so every fresh
+  install, CI included, pulls the newest versions. On 2026-10-22 those were
+  FastAPI 0.161, Starlette 1.9, SQLAlchemy 2.1, Pydantic 2.14,
+  pywebview 6.2.1 and uvicorn 0.54, and the app ran on all of them. If
+  something breaks after a reinstall, suspect a dependency upgrade first.
+- **Where data lives on the Mac:** `~/Library/Application Support/ListingStudio/`
+  holds the DB, thumbnail cache and logs.
+- **Where credentials go:** the **macOS Keychain** (service `listing-studio`,
+  accounts `oauth_token::<platform>` and `service::<name>`). Blobs too
+  large for the Keychain fall back to `<data dir>/credentials/*.cred`.
+  Never put credentials in the repo. Settings can be overridden with
+  `LISTING_STUDIO_*` environment variables or a gitignored `.env` in the
+  working directory. As of 2026-10-22 this Mac has no credentials stored.
+  Connect platforms in the app's Settings screen when you need them.
+- The NAS roots (`Z:\...`) don't exist on the Mac, so the photo picker
+  falls back to the native file dialog.
+
+### Safe smoke test (no window, no Keychain, no marketplace calls)
+
+Point the data dir at a temp folder, swap in the null keyring, and call
+local read-only routes through FastAPI's TestClient:
+
+```bash
+LISTING_STUDIO_DATA_DIR="$(mktemp -d)" PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring .venv/bin/python -c '
+from fastapi.testclient import TestClient
+from listing_studio.config import settings
+from listing_studio.core.db import init_db
+from listing_studio.core.seed import seed_sample_data_if_empty
+settings.ensure_dirs(); init_db(); seed_sample_data_if_empty()
+from listing_studio.ui.api import app
+c = TestClient(app)
+for p in ["/api/health", "/", "/api/templates", "/api/templates/1", "/api/settings/platforms", "/api/categories", "/api/fees", "/api/templates/1/ebay-preview"]:
+    print(c.get(p).status_code, p)'
+```
+
+Leave out `/api/platforms/*`, `/api/ebay/*`, `/api/updates/*` and every
+POST. They call Reverb, eBay, Squarespace or GitHub. A normal launch
+makes one outbound call on boot: `/api/updates/check`, which reads GitHub
+Releases. Launching the real app also opens a window on Justin's screen,
+so use the headless test when you only need to know the backend works.
+
+Baseline at v0.5.21 on 2026-10-22, so new breakage can be told apart from
+existing problems:
+
+- The smoke test returns 200 on every route listed above. A full launch
+  loads the UI with every request returning 200.
+- `ruff check .` reports 49 findings (28 auto-fixable).
+  `ruff format --check .` would reformat 21 files.
+- `mypy listing_studio` reports 29 errors in 9 files.
+
+## Open items (recorded 2026-10-22, not acted on)
+
+- **Personal email in public history.** The repo is public, and 10 of the
+  38 commits carry Justin's personal Gmail as author. The rest use the
+  GitHub noreply address, which is what `git config user.email` is set to
+  now. Rewriting history would change every later commit hash and break
+  the release tags the auto-updater depends on, so the plan is to leave it.
+- **`.gitignore` gaps.** It doesn't cover `node_modules/` or `.dev.vars`
+  (Cloudflare Worker secrets). Neither exists in this repo today. Add both
+  if JS tooling or a Worker ever lands here. Also note that `*.spec` is
+  ignored. The two spec files are already tracked, but a new one would
+  need `git add -f`.
+- **eBay RuName redirect docs may be wrong.** The Cloudflare Worker in
+  `../ebay-deletion-notify` serves eBay's account-deletion notification
+  endpoint, a `/privacy` page, and an HTTPS `/oauth/callback` bridge that
+  forwards eBay's redirect to `http://localhost:8731/api/ebay/oauth/callback`.
+  Its README infers that the RuName's accept URL is that Worker bridge,
+  since eBay requires HTTPS. This repo still says the RuName points
+  straight at localhost and never mentions the Worker: see the "eBay OAuth
+  flow" section above, the RuName help text in `ui/static/js/settings.js`,
+  and `platforms/ebay.py`. Only the eBay developer portal shows which URL
+  is registered, so check there before changing the docs.
+- **Stale branch.** `origin/feat/reverb-photo-host-imgbb` points at the
+  v0.5.0 commit (`093440a`) and is fully merged into `main`: 0 commits
+  ahead, 22 behind. It can be deleted on GitHub.
+- **README is out of date.** It still describes the v0.1.0 scaffold ("no
+  real platform APIs") and says the DB lives in `~/.listing_studio/`.
+  Treat this file as the current reference.
 
 ## Version + release process
 
